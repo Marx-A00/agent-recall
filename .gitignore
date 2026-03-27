@@ -1,0 +1,4 @@
+*.elc
+*-autoloads.el
+*-pkg.el
+.agent-shell/
