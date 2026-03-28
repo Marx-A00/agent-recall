@@ -352,17 +352,41 @@ loaded, offers to resume the session."
                        nil t))
            (file (cdr (assoc selection transcripts))))
       (when file
-        (let ((session-id (agent-recall--resolve-session-id file)))
-          (if (and session-id (fboundp 'agent-shell-resume-session))
-              (pcase (read-char-choice
-                      (format "[o]pen transcript  [r]esume session (%s): "
-                              (substring session-id 0 8))
-                      '(?o ?r))
-                (?r (agent-recall--start-resume session-id file))
-                (?o (find-file file)
-                    (goto-char (point-min))))
-            (find-file file)
-            (goto-char (point-min))))))))
+        (find-file file)
+        (goto-char (point-min))
+        (agent-recall-transcript-mode)))))
+
+(defvar agent-recall-transcript-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "r") #'agent-recall-resume-current)
+    map)
+  "Keymap for `agent-recall-transcript-mode'.")
+
+(define-minor-mode agent-recall-transcript-mode
+  "Minor mode for viewing agent-recall transcripts.
+When the transcript has a resumable session ID, press `r' to resume."
+  :lighter " Recall"
+  :keymap agent-recall-transcript-mode-map
+  (if agent-recall-transcript-mode
+      (let ((session-id (agent-recall--resolve-session-id (buffer-file-name))))
+        (setq-local agent-recall--transcript-session-id session-id)
+        (read-only-mode 1)
+        (if session-id
+            (message "Session resumable (%s) — press `r' to resume"
+                     (substring session-id 0 8))
+          (message "Transcript opened (no session ID — not resumable)")))
+    (read-only-mode -1)
+    (kill-local-variable 'agent-recall--transcript-session-id)))
+
+(defun agent-recall-resume-current ()
+  "Resume the agent-shell session associated with the current transcript."
+  (interactive)
+  (let ((session-id (buffer-local-value 'agent-recall--transcript-session-id
+                                        (current-buffer)))
+        (file (buffer-file-name)))
+    (unless session-id
+      (user-error "This transcript has no resumable session ID"))
+    (agent-recall--start-resume session-id file)))
 
 (defun agent-recall--read-working-directory (file)
   "Extract the Working Directory from transcript FILE header."
