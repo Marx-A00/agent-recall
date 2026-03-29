@@ -415,7 +415,8 @@ Uses `counsel-rg' if available, falling back to `agent-recall-search'."
 ;;;; Browse
 
 (defun agent-recall--list-transcripts ()
-  "Return an alist of (DISPLAY-NAME . FILE-PATH) for all transcripts."
+  "Return an alist of (DISPLAY-NAME . FILE-PATH) for all transcripts.
+Each entry also carries its timestamp for sorting."
   (agent-recall--index-ensure)
   (let ((transcripts '()))
     (maphash (lambda (file entry)
@@ -423,12 +424,14 @@ Uses `counsel-rg' if available, falling back to `agent-recall-search'."
                  (let* ((project (plist-get entry :project))
                         (ts (plist-get entry :timestamp))
                         (display (format "[%s] %s" project ts)))
-                   (push (cons display file) transcripts))))
+                   (push (list display file ts project) transcripts))))
              agent-recall--index)
-    (pcase agent-recall-browse-sort
-      ('date-desc (sort transcripts (lambda (a b) (string> (car a) (car b)))))
-      ('date-asc  (sort transcripts (lambda (a b) (string< (car a) (car b)))))
-      ('project   (sort transcripts (lambda (a b) (string< (car a) (car b))))))))
+    (setq transcripts
+          (pcase agent-recall-browse-sort
+            ('date-desc (sort transcripts (lambda (a b) (string> (nth 2 a) (nth 2 b)))))
+            ('date-asc  (sort transcripts (lambda (a b) (string< (nth 2 a) (nth 2 b)))))
+            ('project   (sort transcripts (lambda (a b) (string< (nth 3 a) (nth 3 b)))))))
+    (mapcar (lambda (entry) (cons (nth 0 entry) (nth 1 entry))) transcripts)))
 
 (defun agent-recall--transcript-preview (file)
   "Extract a one-line preview from transcript FILE.
