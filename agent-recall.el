@@ -91,11 +91,15 @@
   "Face for labels in the transcript header line."
   :group 'agent-recall)
 
-(defcustom agent-recall-search-paths (list (expand-file-name "~"))
+(defcustom agent-recall-search-paths nil
   "Root directories to scan when rebuilding the transcript index.
 Used only by `agent-recall-reindex'.  Each directory is recursively
 searched for `.agent-shell/transcripts/' subdirectories up to
-`agent-recall-max-depth' levels deep."
+`agent-recall-max-depth' levels deep.
+
+Must be set before calling `agent-recall-reindex'.  Example:
+
+  (setq agent-recall-search-paths \\='(\"~/projects\" \"~/work\"))"
   :type '(repeat directory)
   :group 'agent-recall)
 
@@ -341,6 +345,9 @@ This is the only command that crawls the filesystem.  Run it once
 after installing agent-recall, or to pick up transcripts created
 outside of agent-shell sessions tracked by the hook."
   (interactive)
+  (unless agent-recall-search-paths
+    (user-error "agent-recall-search-paths is not set.  Configure it first, e.g.:
+  (setq agent-recall-search-paths '(\"~/projects\" \"~/work\"))"))
   (let ((dirs '())
         (new-index (make-hash-table :test 'equal))
         (file-count 0)
@@ -845,6 +852,7 @@ resume from `agent-recall-browse' and `agent-recall-resume'.
 
 Add to your config:
   (add-hook \\='agent-shell-mode-hook #\\='agent-recall-track-sessions)"
+
   (let ((shell-buffer (current-buffer)))
     ;; Subscribe to init-session to capture the session ID
     (agent-shell-subscribe-to
@@ -996,29 +1004,105 @@ Returns an alist of (SESSION-ID . CREATED-TIME)."
           (error nil))))
     result))
 
-(defun agent-recall--match-by-timestamp (transcript-time sessions)
-  "Find the session matching TRANSCRIPT-TIME from SESSIONS.
-SESSIONS is an alist of (SESSION-ID . CREATED-TIME).
-Returns the session ID string, or nil.
+(defun agent-recall--transcript-first-message (file)
+  "Extract the full first user message from transcript FILE.
+Returns the message text, or nil."
+  (when (file-exists-p file)
+    (with-temp-buffer
+      (insert-file-contents file nil 0 3000)
+      (goto-char (point-min))
+      (when (re-search-forward "^## User.*\n+" nil t)
+        (let* ((start (point))
+               (end (if (re-search-forward "^## " nil t)
+                        (match-beginning 0)
+                      (point-max)))
+               (text (string-trim (buffer-substring-no-properties start end))))
+          (when (string-prefix-p "> " text)
+            (setq text (substring text 2)))
+          (when (> (length text) 0)
+            text))))))
 
-The session `created' time should be slightly AFTER the transcript
-`Started' time due to ACP bootstrap delay.  We find the closest
-session within `agent-recall-session-match-window' seconds where
-session time >= transcript time."
-  (let ((best-id nil)
-        (best-delta most-positive-fixnum))
-    (dolist (entry sessions)
-      (let* ((session-id (car entry))
-             (session-time (cdr entry))
-             (delta (float-time (time-subtract session-time transcript-time))))
-        ;; Session should be after transcript (positive delta)
-        ;; and within the match window
-        (when (and (>= delta 0)
-                   (<= delta agent-recall-session-match-window)
-                   (< delta best-delta))
-          (setq best-id session-id
-                best-delta delta))))
-    best-id))
+(defun agent-recall--jsonl-first-message (file)
+  "Extract the first real user message from JSONL session FILE.
+Skips system/command messages that start with `<'."
+  (when (file-exists-p file)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (let ((result nil))
+        (while (and (not result) (not (eobp)))
+          (let ((line (buffer-substring-no-properties
+                       (line-beginning-position) (line-end-position))))
+            (when (> (length line) 0)
+              (condition-case nil
+                  (let* ((json-object-type 'alist)
+                         (json-array-type 'list)
+                         (json-key-type 'symbol)
+                         (data (json-read-from-string line))
+                         (type (alist-get 'type data)))
+                    (when (equal type "user")
+                      (let* ((msg (alist-get 'message data))
+                             (content (alist-get 'content msg))
+                             (text (cond
+                                    ((stringp content) content)
+                                    ((listp content)
+                                     (cl-loop for c in content
+                                              when (equal (alist-get 'type c) "text")
+                                              return (alist-get 'text c))))))
+                        (when (and text
+                                   (not (string-prefix-p "<" (string-trim text))))
+                          (setq result (string-trim text))))))
+                (error nil)))
+            (forward-line 1)))
+        result))))
+
+(defun agent-recall--normalize-message (text)
+  "Normalize TEXT for comparison: trim, downcase, collapse whitespace."
+  (when text
+    (downcase
+     (replace-regexp-in-string "\\s-+" " " (string-trim text)))))
+
+(defun agent-recall--match-session (transcript-time transcript-file sessions claude-dir)
+  "Find the session matching TRANSCRIPT-FILE from SESSIONS.
+SESSIONS is an alist of (SESSION-ID . CREATED-TIME).
+CLAUDE-DIR is the Claude project directory containing JSONL files.
+Uses hybrid matching: timestamp narrows candidates, message content confirms.
+Returns session ID string, or nil."
+  (let* ((candidates
+          (when transcript-time
+            (let ((result '()))
+              (dolist (entry sessions)
+                (let* ((session-id (car entry))
+                       (session-time (cdr entry)))
+                  (when session-time
+                    (let ((delta (float-time (time-subtract session-time transcript-time))))
+                      (when (and (>= delta 0)
+                                 (<= delta agent-recall-session-match-window))
+                        (push (cons session-id delta) result))))))
+              ;; Sort by closest delta
+              (sort result (lambda (a b) (< (cdr a) (cdr b)))))))
+         (transcript-msg (when candidates
+                           (agent-recall--normalize-message
+                            (agent-recall--transcript-first-message transcript-file)))))
+    (cond
+     ;; Has candidates and a message — try to confirm with content
+     ((and candidates transcript-msg)
+      (let ((confirmed nil))
+        (dolist (cand candidates)
+          (unless confirmed
+            (let* ((id (car cand))
+                   (jsonl-file (expand-file-name (concat id ".jsonl") claude-dir))
+                   (jsonl-msg (agent-recall--normalize-message
+                               (agent-recall--jsonl-first-message jsonl-file))))
+              (when (and jsonl-msg (equal transcript-msg jsonl-msg))
+                (setq confirmed id)))))
+        ;; If no message match, fall back to closest timestamp
+        (or confirmed (car (car candidates)))))
+     ;; Has candidates but no message — closest timestamp
+     (candidates
+      (car (car candidates)))
+     ;; No candidates
+     (t nil))))
 
 (defun agent-recall--resolve-session-id (file)
   "Resolve the session ID for transcript FILE.
@@ -1042,22 +1126,20 @@ Returns session ID string, or nil if unresolvable."
              (or
               ;; 1. Check embedded header
               (agent-recall--read-embedded-session-id file)
-              ;; 2. Try retroactive matching
+              ;; 2. Try hybrid matching (timestamp + message content)
               (let* ((transcript-dir (agent-recall--transcript-dir-from-file file))
                      (project-root (agent-recall--project-root transcript-dir))
                      (claude-dir (agent-recall--claude-project-dir project-root))
                      (transcript-time (agent-recall--parse-transcript-timestamp file)))
-                (when (and claude-dir transcript-time)
+                (when claude-dir
                   (let* ((index-sessions (agent-recall--load-sessions-index claude-dir))
-                         ;; Try index first (fast)
-                         (match (agent-recall--match-by-timestamp
-                                 transcript-time index-sessions)))
-                    (or match
-                        ;; Fall back to scanning JSONL files (slower)
-                        (let ((jsonl-sessions
-                               (agent-recall--scan-jsonl-timestamps claude-dir)))
-                          (agent-recall--match-by-timestamp
-                           transcript-time jsonl-sessions)))))))))
+                         (jsonl-sessions (agent-recall--scan-jsonl-timestamps claude-dir))
+                         (all-sessions (cl-remove-if-not
+                                        (lambda (s) (and (car s) (cdr s)))
+                                        (delete-dups
+                                         (append index-sessions jsonl-sessions)))))
+                    (agent-recall--match-session
+                     transcript-time file all-sessions claude-dir)))))))
         ;; Cache the result
         (puthash file (or session-id 'none) agent-recall--session-id-cache)
         session-id)))))
@@ -1106,37 +1188,31 @@ Results are displayed in the `*agent-recall-backfill*' buffer."
                                    project
                                    (file-name-nondirectory file)
                                    (substring existing 0 8))))
-                  ;; Try to match
+                  ;; Try to match using hybrid approach
                   (t
                    (let* ((transcript-dir (agent-recall--transcript-dir-from-file file))
                           (project-root (agent-recall--project-root transcript-dir))
                           (claude-dir (agent-recall--claude-project-dir project-root))
                           (transcript-time (agent-recall--parse-transcript-timestamp file))
-                          (session-id nil)
-                          (delta nil))
-                     ;; Resolve session ID with delta tracking
-                     (when (and claude-dir transcript-time)
-                       (let ((all-sessions
-                              (append
-                               (agent-recall--load-sessions-index claude-dir)
-                               (agent-recall--scan-jsonl-timestamps claude-dir))))
-                         (setq all-sessions (delete-dups all-sessions))
-                         (dolist (entry all-sessions)
-                           (let ((d (float-time
-                                     (time-subtract (cdr entry) transcript-time))))
-                             (when (and (>= d 0)
-                                        (<= d agent-recall-session-match-window)
-                                        (or (null delta) (< d delta)))
-                               (setq session-id (car entry)
-                                     delta d))))))
+                          (session-id nil))
+                     (when claude-dir
+                       (let* ((all-sessions
+                               (cl-remove-if-not
+                                (lambda (s) (and (car s) (cdr s)))
+                                (delete-dups
+                                 (append
+                                  (agent-recall--load-sessions-index claude-dir)
+                                  (agent-recall--scan-jsonl-timestamps claude-dir))))))
+                         (setq session-id
+                               (agent-recall--match-session
+                                transcript-time file all-sessions claude-dir))))
                      (if session-id
                          (progn
                            (cl-incf matched)
-                           (insert (format "  MATCH:    [%s] %s → %s (Δ%.0fs)\n"
+                           (insert (format "  MATCH:    [%s] %s → %s\n"
                                            project
                                            (file-name-nondirectory file)
-                                           (substring session-id 0 8)
-                                           delta))
+                                           (substring session-id 0 8)))
                            (when actually-write
                              (agent-recall--write-session-id-to-file file session-id)
                              (push file modified-files)))
