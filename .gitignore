@@ -10,3 +10,4 @@
 .env.example
 .mcp.json
 .taskmaster/
+/CLAUDE.md

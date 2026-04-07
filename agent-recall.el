@@ -174,12 +174,24 @@ with `agent-recall-reindex'."
 (defcustom agent-recall-browse-sort 'date-desc
   "Sort order for `agent-recall-browse'.
 Possible values:
-  `date-desc'  - newest first (default)
-  `date-asc'   - oldest first
-  `project'    - group by project name"
-  :type '(choice (const :tag "Newest first" date-desc)
-                 (const :tag "Oldest first" date-asc)
+  `date-desc'     - newest first by creation date (default)
+  `date-asc'      - oldest first by creation date
+  `modified-desc' - most recently modified first
+  `modified-asc'  - least recently modified first
+  `project'       - group by project name"
+  :type '(choice (const :tag "Newest first (created)" date-desc)
+                 (const :tag "Oldest first (created)" date-asc)
+                 (const :tag "Recently modified first" modified-desc)
+                 (const :tag "Least recently modified first" modified-asc)
                  (const :tag "By project" project))
+  :group 'agent-recall)
+
+(defcustom agent-recall-resume-continue-transcript t
+  "Whether resumed sessions append to the original transcript file.
+When non-nil (the default), resuming a session continues writing to
+the same transcript file, keeping the full conversation in one place.
+When nil, agent-shell creates a new transcript file as usual."
+  :type 'boolean
   :group 'agent-recall)
 
 (defcustom agent-recall-claude-config-dir
@@ -512,9 +524,17 @@ Each entry also carries its timestamp for sorting."
              agent-recall--index)
     (setq transcripts
           (pcase agent-recall-browse-sort
-            ('date-desc (sort transcripts (lambda (a b) (string> (nth 2 a) (nth 2 b)))))
-            ('date-asc  (sort transcripts (lambda (a b) (string< (nth 2 a) (nth 2 b)))))
-            ('project   (sort transcripts (lambda (a b) (string< (nth 3 a) (nth 3 b)))))))
+            ('date-desc     (sort transcripts (lambda (a b) (string> (nth 2 a) (nth 2 b)))))
+            ('date-asc      (sort transcripts (lambda (a b) (string< (nth 2 a) (nth 2 b)))))
+            ('modified-desc (sort transcripts (lambda (a b)
+                                                (time-less-p
+                                                 (file-attribute-modification-time (file-attributes (nth 1 b)))
+                                                 (file-attribute-modification-time (file-attributes (nth 1 a)))))))
+            ('modified-asc  (sort transcripts (lambda (a b)
+                                                (time-less-p
+                                                 (file-attribute-modification-time (file-attributes (nth 1 a)))
+                                                 (file-attribute-modification-time (file-attributes (nth 1 b)))))))
+            ('project       (sort transcripts (lambda (a b) (string< (nth 3 a) (nth 3 b)))))))
     (mapcar (lambda (entry) (cons (nth 0 entry) (nth 1 entry))) transcripts)))
 
 (defun agent-recall--transcript-preview (file)
@@ -737,6 +757,9 @@ When TRANSCRIPT-FILE is provided, sets working directory from the transcript."
                                            :session-strategy 'new
                                            :no-focus t
                                            :new-session t)))
+    (when (and transcript-file agent-recall-resume-continue-transcript)
+      (with-current-buffer shell-buffer
+        (setq-local agent-shell--transcript-file transcript-file)))
     (if (derived-mode-p 'agent-shell-mode 'agent-shell-viewport-view-mode
                         'agent-shell-viewport-edit-mode)
         (if (bound-and-true-p agent-shell-prefer-viewport-interaction)

@@ -97,6 +97,9 @@ Tell agent-recall where your projects live. These directories are scanned recurs
 
 ```elisp
 (setq agent-recall-search-paths '("~/projects" "~/work" "~/personal"))
+
+;; Or scan everything (slow on large home directories):
+;; (setq agent-recall-search-paths '("~"))
 ```
 
 #### Search backend
@@ -128,11 +131,17 @@ To automatically embed session IDs in new transcripts (enabling instant resume):
 #### Browse sort order
 
 ```elisp
-;; Newest first (default)
+;; Newest first by creation date (default)
 (setq agent-recall-browse-sort 'date-desc)
 
-;; Oldest first
+;; Oldest first by creation date
 (setq agent-recall-browse-sort 'date-asc)
+
+;; Most recently modified first (recommended — resumed sessions float to top)
+(setq agent-recall-browse-sort 'modified-desc)
+
+;; Least recently modified first
+(setq agent-recall-browse-sort 'modified-asc)
 
 ;; Group by project
 (setq agent-recall-browse-sort 'project)
@@ -154,7 +163,7 @@ To automatically embed session IDs in new transcripts (enabling instant resume):
   :config
   (setq agent-recall-search-paths '("~/projects" "~/work")
         agent-recall-search-function 'consult-ripgrep
-        agent-recall-browse-sort 'date-desc))
+        agent-recall-browse-sort 'modified-desc))
 ```
 
 ## Usage
@@ -196,6 +205,25 @@ There are two ways to resume a past session:
 - `M-x agent-recall-resume` to pick from all resumable transcripts
 
 Requires agent-shell to be loaded.
+
+#### Transcript continuity
+
+When you resume a session, agent-recall appends new messages to the **original transcript file** rather than creating a new one. This keeps the full conversation history in a single file.
+
+#### Session load vs resume
+
+agent-shell supports two ACP methods for resuming sessions:
+
+- **`session/resume`** — reconnects to the session server-side but does **not** return previous messages to the buffer
+- **`session/load`** — reconnects and **returns previous messages**, so you can see the full conversation history in the buffer
+
+To get previous messages when resuming, set:
+
+```elisp
+(setq agent-shell-prefer-session-resume nil)
+```
+
+This tells agent-shell to use `session/load` instead of `session/resume` when both are available.
 
 ### Backfilling session IDs
 
@@ -250,7 +278,7 @@ Evil users get additional bindings in normal state:
 | `agent-recall-search-context-lines` | Context lines around search matches (default: 2) |
 | `agent-recall-search-function` | Search backend: grep, deadgrep, counsel-rg, consult-ripgrep |
 | `agent-recall-index-file` | Path to persistent index file |
-| `agent-recall-browse-sort` | Sort order: date-desc, date-asc, project |
+| `agent-recall-browse-sort` | Sort order: date-desc, date-asc, modified-desc, modified-asc, project |
 | `agent-recall-claude-config-dir` | Claude CLI config directory for session matching |
 | `agent-recall-session-match-window` | Max seconds for timestamp matching (default: 120) |
 
