@@ -76,6 +76,10 @@
 
 (defvar deadgrep-extra-arguments)
 (defvar counsel-rg-base-command)
+(declare-function evil-local-set-key "evil-core" (state key def))
+(declare-function deadgrep "deadgrep" (search-term &optional directory))
+(declare-function counsel-rg "counsel" (&optional initial-input initial-directory extra-rg-args rg-prompt))
+(declare-function consult-ripgrep "consult" (&optional dir initial))
 
 ;;;; Customization
 
