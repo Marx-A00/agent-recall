@@ -52,14 +52,13 @@ jobs:
           emacs --batch --eval "
           (progn
             (require 'checkdoc)
-            (with-temp-buffer
-              (insert-file-contents \"agent-recall.el\")
-              (setq buffer-file-name \"agent-recall.el\")
-              (emacs-lisp-mode)
-              (let ((err (checkdoc-file \"agent-recall.el\")))
-                (when err
-                  (message \"%s\" err)
-                  (kill-emacs 1)))))"
+            (let ((checkdoc-diagnostic-buffer \"*checkdoc*\"))
+              (checkdoc-file \"agent-recall.el\")
+              (when-let ((buf (get-buffer \"*checkdoc*\")))
+                (with-current-buffer buf
+                  (when (> (buffer-size) 0)
+                    (princ (buffer-string) #'external-debugging-output)
+                    (kill-emacs 1))))))"
 
       - name: Byte compile
         run: |
