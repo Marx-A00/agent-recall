@@ -75,6 +75,7 @@
 (require 'json)
 
 (defvar deadgrep-extra-arguments)
+(defvar counsel-rg-base-command)
 
 ;;;; Customization
 
