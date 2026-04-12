@@ -83,6 +83,10 @@
 (declare-function deadgrep "deadgrep" (search-term &optional directory))
 (declare-function counsel-rg "counsel" (&optional initial-input initial-directory extra-rg-args rg-prompt))
 (declare-function consult-ripgrep "consult" (&optional dir initial))
+(declare-function shell-maker-submit "shell-maker"
+                  (&key input on-output on-finished))
+(declare-function agent-shell-select-config "agent-shell"
+                  (&key prompt))
 
 ;;;; Customization
 
@@ -527,6 +531,71 @@ QUERY and DIRS are unused; consult-ripgrep prompts interactively."
     (when (and agent-recall-auto-transcript-mode
                (agent-recall--transcript-file-p (buffer-file-name)))
       (agent-recall-transcript-mode 1))))
+
+;;;###autoload
+(defun agent-recall-search-string (query &optional max-results)
+  "Search transcripts for QUERY, return results as a string.
+Intended for programmatic use, e.g. from `emacsclient --eval'.
+Uses ripgrep to search all indexed transcript directories.
+Returns up to MAX-RESULTS (default 20) matching lines with context.
+Returns an empty string when no matches are found."
+  (agent-recall--index-ensure)
+  (let* ((dirs (agent-recall--index-dirs))
+         (dir-args (mapconcat #'shell-quote-argument dirs " "))
+         (cmd (format "%s --follow --glob '%s' --sort=modified -C %d -m %d -i -- %s %s"
+                      agent-recall-rg-executable
+                      agent-recall-file-pattern
+                      agent-recall-search-context-lines
+                      (or max-results 20)
+                      (shell-quote-argument query)
+                      dir-args)))
+    (if dirs
+        (string-trim (shell-command-to-string cmd))
+      "")))
+
+;;;###autoload
+(defun agent-recall-search-summaries-string (query &optional max-results)
+  "Search transcript summaries for QUERY, return results as a string.
+Like `agent-recall-search-string' but searches only summary files
+\(*.summary.md), which are produced by `agent-recall-summarize'.
+Returns an empty string when no matches or summaries are found."
+  (agent-recall--index-ensure)
+  (let* ((dirs (agent-recall--index-dirs))
+         (dir-args (mapconcat #'shell-quote-argument dirs " "))
+         (cmd (format "%s --follow --glob '%s' --sort=modified -C %d -m %d -i -- %s %s"
+                      agent-recall-rg-executable
+                      "*.summary.md"
+                      agent-recall-search-context-lines
+                      (or max-results 20)
+                      (shell-quote-argument query)
+                      dir-args)))
+    (if dirs
+        (string-trim (shell-command-to-string cmd))
+      "")))
+
+;;;###autoload
+(defun agent-recall-list-projects-string ()
+  "Return a summary of indexed projects and transcript counts.
+Intended for programmatic use, e.g. from `emacsclient --eval'.
+Returns a human-readable string with project names and file counts."
+  (agent-recall--index-ensure)
+  (let ((project-data (make-hash-table :test 'equal))
+        (lines '()))
+    (maphash (lambda (_file entry)
+               (let* ((project (plist-get entry :project))
+                      (cur (gethash project project-data 0)))
+                 (puthash project (1+ cur) project-data)))
+             agent-recall--index)
+    (maphash (lambda (project count)
+               (push (format "  %-30s %4d transcripts" project count) lines))
+             project-data)
+    (setq lines (sort lines #'string<))
+    (if lines
+        (mapconcat #'identity
+                   (cons (format "Indexed projects: %d\n" (hash-table-count project-data))
+                         lines)
+                   "\n")
+      "No transcripts indexed.  Run M-x agent-recall-reindex.")))
 
 ;;;###autoload
 (defun agent-recall-search (query)
@@ -1347,6 +1416,303 @@ Results are displayed in the `*agent-recall-backfill*' buffer."
       (goto-char (point-min))
       (special-mode)
       (pop-to-buffer (current-buffer)))))
+
+;;; ====================================================================
+;;; Transcript Summarization
+;;; ====================================================================
+
+(defun agent-recall--summary-file (transcript-file)
+  "Return the summary file path for TRANSCRIPT-FILE.
+Given `TIMESTAMP.md', returns `TIMESTAMP.summary.md' in the same directory."
+  (let ((base (file-name-sans-extension transcript-file)))
+    (concat base ".summary.md")))
+
+(defun agent-recall--needs-summary-p (file)
+  "Return non-nil if transcript FILE has no summary yet."
+  (not (file-exists-p (agent-recall--summary-file file))))
+
+(defun agent-recall--clean-transcript-string (file)
+  "Return the content of transcript FILE with tool calls stripped.
+Extracts only the header plus User and Agent sections, removing
+tool calls and agent thought blocks."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (let ((source (current-buffer))
+          (result (generate-new-buffer " *recall-clean*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer source
+              (save-excursion
+                (goto-char (point-min))
+                ;; Copy the header (everything before first ## heading)
+                (let ((header-end (or (re-search-forward "^## " nil t)
+                                      (point-max))))
+                  (with-current-buffer result
+                    (insert-buffer-substring source 1 header-end)))
+                (goto-char (point-min))
+                ;; Extract User and Agent sections, stopping at tool calls
+                (while (re-search-forward "^## \\(User\\|Agent\\) " nil t)
+                  (let* ((section-start (match-beginning 0))
+                         (section-end
+                          (save-excursion
+                            (goto-char (match-end 0))
+                            (if (re-search-forward
+                                 "^\\(## \\|### Tool Call\\)" nil t)
+                                (match-beginning 0)
+                              (point-max))))
+                         (text (buffer-substring-no-properties
+                                section-start section-end)))
+                    (with-current-buffer result
+                      (insert text))
+                    (goto-char section-end)))))
+            (with-current-buffer result
+              (buffer-string)))
+        (kill-buffer result)))))
+
+(defvar agent-recall--summarize-prompt
+  "Summarize the following agent-shell conversation transcript.
+Produce a structured summary in this exact format:
+
+# Summary
+
+**Topic:** One-line description of what the conversation was about
+**Problem:** The problem or goal the user was trying to solve
+**Outcome:** What was achieved or decided
+**Tags:** comma-separated lowercase keywords for search
+
+## Details
+A concise 2-3 paragraph summary covering the key points, decisions made,
+and any solutions or code changes produced.
+
+IMPORTANT: Output ONLY the summary in the format above, nothing else.
+Do not include any preamble or commentary.
+
+Here is the transcript:
+
+"
+  "Prompt template for transcript summarization.")
+
+(defvar-local agent-recall--summarize-client nil
+  "ACP client for the current summarization session.")
+
+(defvar-local agent-recall--summarize-session-id nil
+  "ACP session ID for the current summarization session.")
+
+(defvar-local agent-recall--summarize-response-text nil
+  "Accumulated response text from agent_message_chunk notifications.")
+
+(defun agent-recall--summarize-cleanup (work-buffer)
+  "Clean up summarization ACP session in WORK-BUFFER."
+  (when (buffer-live-p work-buffer)
+    (with-current-buffer work-buffer
+      (when agent-recall--summarize-session-id
+        (ignore-errors
+          (acp-send-notification
+           :client agent-recall--summarize-client
+           :notification (acp-make-session-cancel-notification
+                          :session-id agent-recall--summarize-session-id
+                          :reason "Summarization complete"))))
+      (when agent-recall--summarize-client
+        (ignore-errors
+          (acp-shutdown :client agent-recall--summarize-client)))
+      (setq agent-recall--summarize-client nil
+            agent-recall--summarize-session-id nil
+            agent-recall--summarize-response-text nil))))
+
+(defun agent-recall--summarize-next (files work-buffer progress-buffer
+                                           total done)
+  "Summarize the next transcript in FILES using WORK-BUFFER's ACP session.
+PROGRESS-BUFFER shows status.  TOTAL and DONE track progress."
+  (if (null files)
+      (progn
+        (agent-recall--summarize-cleanup work-buffer)
+        (ignore-errors (kill-buffer work-buffer))
+        (when (buffer-live-p progress-buffer)
+          (with-current-buffer progress-buffer
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert (format "\nDone.  Summarized %d transcripts.\n" done))))))
+    (let* ((file (car files))
+           (rest (cdr files))
+           (project (or (plist-get (gethash file agent-recall--index) :project)
+                        "unknown"))
+           (clean-content (agent-recall--clean-transcript-string file))
+           (prompt (concat agent-recall--summarize-prompt clean-content)))
+      (when (buffer-live-p progress-buffer)
+        (with-current-buffer progress-buffer
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (insert (format "  [%d/%d] [%s] %s..."
+                            (1+ done) total project
+                            (file-name-nondirectory file))))))
+      ;; Reset accumulated text for this turn
+      (with-current-buffer work-buffer
+        (setq agent-recall--summarize-response-text ""))
+      (acp-send-request
+       :client (buffer-local-value 'agent-recall--summarize-client work-buffer)
+       :sync nil
+       :request (acp-make-session-prompt-request
+                 :session-id (buffer-local-value
+                              'agent-recall--summarize-session-id work-buffer)
+                 :prompt (vector (list (cons 'type "text")
+                                       (cons 'text prompt))))
+       :on-success
+       (lambda (_result)
+         (condition-case err
+             (let* ((text (and (buffer-live-p work-buffer)
+                               (with-current-buffer work-buffer
+                                 (string-trim
+                                  agent-recall--summarize-response-text))))
+                    (summary-file (agent-recall--summary-file file)))
+               (if (and text (not (string-empty-p text)))
+                   (progn
+                     (with-temp-file summary-file
+                       (insert text "\n"))
+                     (when (buffer-live-p progress-buffer)
+                       (with-current-buffer progress-buffer
+                         (let ((inhibit-read-only t))
+                           (goto-char (point-max))
+                           (insert (format " wrote %s\n" summary-file))))))
+                 (when (buffer-live-p progress-buffer)
+                   (with-current-buffer progress-buffer
+                     (let ((inhibit-read-only t))
+                       (goto-char (point-max))
+                       (insert " FAILED (empty output)\n"))))))
+           (error
+            (when (buffer-live-p progress-buffer)
+              (with-current-buffer progress-buffer
+                (let ((inhibit-read-only t))
+                  (goto-char (point-max))
+                  (insert (format " ERROR: %s\n"
+                                  (error-message-string err))))))))
+         ;; Continue to next file
+         (agent-recall--summarize-next
+          rest work-buffer progress-buffer total (1+ done)))
+       :on-failure
+       (lambda (err)
+         (when (buffer-live-p progress-buffer)
+           (with-current-buffer progress-buffer
+             (let ((inhibit-read-only t))
+               (goto-char (point-max))
+               (insert (format " FAILED: %S\n" err)))))
+         (agent-recall--summarize-next
+          rest work-buffer progress-buffer total (1+ done)))))))
+
+;;;###autoload
+(defun agent-recall-summarize ()
+  "Summarize all un-summarized transcripts via ACP.
+Creates a dedicated ACP session (independent of any agent-shell
+buffer) to send each transcript through the LLM.  Summaries are
+saved as TIMESTAMP.summary.md files next to the original transcripts.
+
+This is a user-initiated batch operation.  Transcripts that already
+have a summary file are skipped.  Progress is shown in the
+*agent-recall-summarize* buffer."
+  (interactive)
+  (agent-recall--index-ensure)
+  (let ((config (agent-shell-select-config
+                 :prompt "Select agent for summarization: ")))
+    (unless config
+      (user-error "No agent config selected"))
+    (let ((files '()))
+      (maphash (lambda (file _entry)
+                 (when (and (file-exists-p file)
+                            (agent-recall--needs-summary-p file))
+                   (push file files)))
+               agent-recall--index)
+      (unless files
+        (user-error "All transcripts already have summaries"))
+      (setq files (sort files #'string<))
+      (let* ((progress-buffer (get-buffer-create "*agent-recall-summarize*"))
+             (work-buffer (generate-new-buffer " *agent-recall-summarize-work*"))
+             (client nil))
+        (with-current-buffer progress-buffer
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert (format "Agent Recall — Summarizing %d transcripts\n"
+                            (length files)))
+            (insert (make-string 40 ?═) "\n\n"))
+          (special-mode))
+        (pop-to-buffer progress-buffer)
+        ;; Set up ACP client in the hidden work buffer
+        (with-current-buffer work-buffer
+          (setq agent-recall--summarize-response-text "")
+          (setq client (funcall (alist-get :client-maker config) work-buffer))
+          (setq agent-recall--summarize-client client)
+          ;; Subscribe to notifications — accumulate agent_message_chunk text
+          (acp-subscribe-to-notifications
+           :client client
+           :buffer work-buffer
+           :on-notification
+           (lambda (notification)
+             (when (buffer-live-p work-buffer)
+               (with-current-buffer work-buffer
+                 (let-alist notification
+                   (when (equal .method "session/update")
+                     (let ((update (alist-get 'update .params)))
+                       (when (equal (alist-get 'sessionUpdate update)
+                                    "agent_message_chunk")
+                         (let-alist update
+                           (setq agent-recall--summarize-response-text
+                                 (concat agent-recall--summarize-response-text
+                                         .content.text)))))))))))
+          ;; Subscribe to errors
+          (acp-subscribe-to-errors
+           :client client
+           :buffer work-buffer
+           :on-error
+           (lambda (err)
+             (when (buffer-live-p progress-buffer)
+               (with-current-buffer progress-buffer
+                 (let ((inhibit-read-only t))
+                   (goto-char (point-max))
+                   (insert (format "\nAgent error: %S\n" err)))))
+             (agent-recall--summarize-cleanup work-buffer)
+             (ignore-errors (kill-buffer work-buffer))))
+          ;; Initialize → New session → Start summarizing
+          (acp-send-request
+           :client client
+           :sync nil
+           :request (acp-make-initialize-request
+                     :protocol-version 1
+                     :read-text-file-capability nil
+                     :write-text-file-capability nil)
+           :on-success
+           (lambda (_result)
+             (when (buffer-live-p work-buffer)
+               (acp-send-request
+                :client client
+                :sync nil
+                :request (acp-make-session-new-request
+                          :cwd default-directory
+                          :mcp-servers [])
+                :on-success
+                (lambda (session-response)
+                  (when (buffer-live-p work-buffer)
+                    (with-current-buffer work-buffer
+                      (setq agent-recall--summarize-session-id
+                            (alist-get 'sessionId session-response)))
+                    (agent-recall--summarize-next
+                     files work-buffer progress-buffer
+                     (length files) 0)))
+                :on-failure
+                (lambda (err)
+                  (when (buffer-live-p progress-buffer)
+                    (with-current-buffer progress-buffer
+                      (let ((inhibit-read-only t))
+                        (goto-char (point-max))
+                        (insert (format "\nSession creation failed: %S\n" err)))))
+                  (agent-recall--summarize-cleanup work-buffer)
+                  (ignore-errors (kill-buffer work-buffer))))))
+           :on-failure
+           (lambda (err)
+             (when (buffer-live-p progress-buffer)
+               (with-current-buffer progress-buffer
+                 (let ((inhibit-read-only t))
+                   (goto-char (point-max))
+                   (insert (format "\nInitialize failed: %S\n" err)))))
+             (agent-recall--summarize-cleanup work-buffer)
+             (ignore-errors (kill-buffer work-buffer)))))))))
 
 (provide 'agent-recall)
 ;;; agent-recall.el ends here
