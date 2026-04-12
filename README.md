@@ -167,7 +167,19 @@ To automatically embed session IDs in new transcripts (enabling instant resume):
 
 ### Transcript mode
 
-When you open a transcript file (either via browse, search, or `C-x C-f`), `agent-recall-transcript-mode` activates automatically. The buffer becomes read-only and shows a header line with available actions.
+When you open a transcript via `agent-recall-browse`, `agent-recall-search`, or `agent-recall-search-live`, `agent-recall-transcript-mode` activates automatically. The buffer becomes read-only and shows a header line with available actions.
+
+To disable auto-activation:
+
+```elisp
+(setq agent-recall-auto-transcript-mode nil)
+```
+
+You can always toggle it manually with `M-x agent-recall-transcript-mode`, or enable it globally for all transcript files (including those opened outside of agent-recall):
+
+```elisp
+(global-agent-recall-transcript-mode 1)
+```
 
 ### Resuming sessions
 
@@ -260,6 +272,7 @@ Evil users get additional bindings in normal state:
 | `agent-recall-search-function` | Search backend: grep, deadgrep, counsel-rg, consult-ripgrep |
 | `agent-recall-index-file` | Path to persistent index file |
 | `agent-recall-browse-sort` | Sort order: date-desc, date-asc, modified-desc, modified-asc, project |
+| `agent-recall-auto-transcript-mode` | Auto-activate transcript-mode from agent-recall commands (default: t) |
 | `agent-recall-resume-continue-transcript` | Append to original transcript on resume (default: t) |
 | `agent-recall-claude-config-dir` | Claude CLI config directory for session matching |
 | `agent-recall-session-match-window` | Max seconds for timestamp matching (default: 120) |

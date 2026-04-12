@@ -1,6 +1,6 @@
 ;;; agent-recall.el --- Search and browse agent-shell conversation transcripts -*- lexical-binding: t -*-
 
-;; Author: Marcos Andrade
+;; Author: Marcos Andrade <https://github.com/Marx-A00>
 ;; URL: https://github.com/Marx-A00/agent-recall
 ;; Version: 0.3.0
 ;; Package-Requires: ((emacs "29.1") (agent-shell "0.1.0"))
@@ -57,6 +57,9 @@
 ;;
 ;;   ;; See stats about your transcript collection
 ;;   M-x agent-recall-stats
+;;
+;;   ;; Auto-activate transcript-mode when visiting transcripts
+;;   (global-agent-recall-transcript-mode 1)
 ;;
 ;; Session resume setup (optional):
 ;;
@@ -217,6 +220,16 @@ Increase this if matching fails due to slow initialization."
   :type 'integer
   :group 'agent-recall)
 
+(defcustom agent-recall-auto-transcript-mode t
+  "Whether agent-recall commands automatically enable transcript-mode.
+When non-nil, opening a transcript via `agent-recall-browse',
+`agent-recall-search', or `agent-recall-search-live' activates
+`agent-recall-transcript-mode'.  Set to nil to browse transcripts
+as plain files.  You can always toggle transcript-mode manually
+with \\[agent-recall-transcript-mode]."
+  :type 'boolean
+  :group 'agent-recall)
+
 ;;;; Internal State
 
 (defvar agent-recall--index nil
@@ -239,6 +252,9 @@ Values are session ID strings, or the symbol `none' for unresolvable.")
 
 (defvar-local agent-recall--session-id-written-p nil
   "Non-nil if session ID has already been written to this buffer's transcript.")
+
+(defvar-local agent-recall--search-buffer-p nil
+  "Non-nil in buffers created by agent-recall search commands.")
 
 ;;;; Persistent Index
 
@@ -423,7 +439,7 @@ outside of agent-shell sessions tracked by the hook."
   "Create a directory with symlinks to all transcript dirs.
 Returns the path.  Each symlink is named PROJECT-COUNT to avoid
 collisions when multiple projects share a name.
-The directory lives under `~/.agent-recall/search/'."
+The directory lives alongside `agent-recall-index-file'."
   (let* ((base (expand-file-name "search" (file-name-directory agent-recall-index-file)))
          (dirs (agent-recall--index-dirs)))
     (when (file-exists-p base)
@@ -442,6 +458,22 @@ The directory lives under `~/.agent-recall/search/'."
     (setq agent-recall--symlink-dir base)
     base))
 
+(defun agent-recall--install-transcript-hook ()
+  "Add transcript-mode hook to `find-file-hook' if not already present."
+  (unless (memq #'agent-recall--maybe-enable-from-search find-file-hook)
+    (add-hook 'find-file-hook #'agent-recall--maybe-enable-from-search)))
+
+(defun agent-recall--maybe-enable-from-search ()
+  "Enable transcript-mode if file is a transcript opened from agent-recall.
+Only activates when `agent-recall-auto-transcript-mode' is non-nil and
+an agent-recall search buffer exists in the current session."
+  (when (and agent-recall-auto-transcript-mode
+             (agent-recall--transcript-file-p (buffer-file-name))
+             (cl-some (lambda (buf)
+                        (buffer-local-value 'agent-recall--search-buffer-p buf))
+                      (buffer-list)))
+    (agent-recall-transcript-mode 1)))
+
 (defun agent-recall--search-via-grep (query dirs)
   "Search DIRS for QUERY using grep with results in `grep-mode'.
 Falls back to standard grep, available on all systems."
@@ -451,7 +483,12 @@ Falls back to standard grep, available on all systems."
                       (shell-quote-argument agent-recall-file-pattern)
                       (shell-quote-argument query)
                       dir-args)))
-    (grep cmd)))
+    (grep cmd)
+    (when agent-recall-auto-transcript-mode
+      (agent-recall--install-transcript-hook)
+      (when-let ((buf (get-buffer "*grep*")))
+        (with-current-buffer buf
+          (setq-local agent-recall--search-buffer-p t))))))
 
 (defun agent-recall--search-via-deadgrep (query _dirs)
   "Search transcripts for QUERY using `deadgrep'.
@@ -460,7 +497,10 @@ DIRS are unused; deadgrep searches the symlink directory instead."
     (user-error "Deadgrep is not installed.  Install it or set `agent-recall-search-function' to `grep'"))
   (let ((dir (agent-recall--ensure-symlink-dir))
         (deadgrep-extra-arguments (append deadgrep-extra-arguments '("--follow"))))
-    (deadgrep query dir)))
+    (deadgrep query dir)
+    (when agent-recall-auto-transcript-mode
+      (agent-recall--install-transcript-hook)
+      (setq-local agent-recall--search-buffer-p t))))
 
 (defun agent-recall--search-via-counsel-rg (query _dirs)
   "Search transcripts for QUERY using `counsel-rg'.
@@ -472,7 +512,10 @@ DIRS are unused; counsel-rg searches the symlink directory instead."
           (list "rg" "--max-columns" "240" "--with-filename"
                 "--no-heading" "--line-number" "--color" "never"
                 "--follow" "--glob" agent-recall-file-pattern "%s")))
-    (counsel-rg query dir "" "Recall: ")))
+    (counsel-rg query dir "" "Recall: ")
+    (when (and agent-recall-auto-transcript-mode
+               (agent-recall--transcript-file-p (buffer-file-name)))
+      (agent-recall-transcript-mode 1))))
 
 (defun agent-recall--search-via-consult-ripgrep (_query _dirs)
   "Search transcripts using `consult-ripgrep'.
@@ -480,7 +523,10 @@ QUERY and DIRS are unused; consult-ripgrep prompts interactively."
   (unless (fboundp 'consult-ripgrep)
     (user-error "Consult is not installed.  Install it or set `agent-recall-search-function' to `grep'"))
   (let ((dir (agent-recall--ensure-symlink-dir)))
-    (consult-ripgrep dir)))
+    (consult-ripgrep dir)
+    (when (and agent-recall-auto-transcript-mode
+               (agent-recall--transcript-file-p (buffer-file-name)))
+      (agent-recall-transcript-mode 1))))
 
 ;;;###autoload
 (defun agent-recall-search (query)
@@ -588,7 +634,8 @@ loaded, offers to resume the session."
       (when file
         (find-file file)
         (goto-char (point-min))
-        (agent-recall-transcript-mode)))))
+        (when agent-recall-auto-transcript-mode
+          (agent-recall-transcript-mode))))))
 
 (defun agent-recall-clean-view ()
   "Open a clean view of the current transcript.
@@ -717,15 +764,20 @@ When the transcript has a resumable session ID, press `r' to resume."
   "Return non-nil if FILE is inside an agent-shell transcript directory.
 Also matches files opened via the agent-recall search symlink directory."
   (and file
-       (or (string-match-p "/\\.agent-shell/transcripts/" file)
-           (string-match-p "/\\.agent-recall/search/" file))))
+       (or (string-match-p (concat "/" (regexp-quote agent-recall-transcript-dir-name) "/") file)
+           (and agent-recall--symlink-dir
+                (string-prefix-p (expand-file-name agent-recall--symlink-dir)
+                                 (expand-file-name file))))))
 
 (defun agent-recall--maybe-enable-transcript-mode ()
   "Enable `agent-recall-transcript-mode' if visiting a transcript file."
   (when (agent-recall--transcript-file-p (buffer-file-name))
     (agent-recall-transcript-mode 1)))
 
-(add-hook 'find-file-hook #'agent-recall--maybe-enable-transcript-mode)
+;;;###autoload
+(define-globalized-minor-mode global-agent-recall-transcript-mode
+  agent-recall-transcript-mode agent-recall--maybe-enable-transcript-mode
+  :group 'agent-recall)
 
 (defun agent-recall-resume-current ()
   "Resume the agent-shell session associated with the current transcript."
