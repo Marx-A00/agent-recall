@@ -1501,6 +1501,22 @@ Here is the transcript:
 (defvar-local agent-recall--summarize-response-text nil
   "Accumulated response text from agent_message_chunk notifications.")
 
+(defvar-local agent-recall--summarize-progress-marker nil
+  "Marker in the progress buffer for updating the current item's status.")
+
+(defvar-local agent-recall--summarize-progress-buffer nil
+  "Reference to the progress buffer, for timer and notification callbacks.")
+
+(defvar-local agent-recall--summarize-spinner-index 0
+  "Current spinner frame index.")
+
+(defvar-local agent-recall--summarize-spinner-timer nil
+  "Timer for the spinner animation.")
+
+(defconst agent-recall--spinner-frames
+  ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"]
+  "Braille spinner frames for progress indication.")
+
 (defun agent-recall--summarize-cleanup (work-buffer)
   "Clean up summarization ACP session in WORK-BUFFER."
   (when (buffer-live-p work-buffer)
@@ -1515,9 +1531,81 @@ Here is the transcript:
       (when agent-recall--summarize-client
         (ignore-errors
           (acp-shutdown :client agent-recall--summarize-client)))
+      (when agent-recall--summarize-spinner-timer
+        (cancel-timer agent-recall--summarize-spinner-timer))
       (setq agent-recall--summarize-client nil
             agent-recall--summarize-session-id nil
-            agent-recall--summarize-response-text nil))))
+            agent-recall--summarize-response-text nil
+            agent-recall--summarize-spinner-timer nil
+            agent-recall--summarize-progress-marker nil
+            agent-recall--summarize-progress-buffer nil))))
+
+(defun agent-recall--summarize-refresh-status (work-buffer)
+  "Update spinner and received char count in the progress buffer.
+Uses buffer-local state from WORK-BUFFER to render inline status."
+  (when (buffer-live-p work-buffer)
+    (let* ((progress-buf (buffer-local-value
+                          'agent-recall--summarize-progress-buffer work-buffer))
+           (marker (buffer-local-value
+                    'agent-recall--summarize-progress-marker work-buffer))
+           (idx (buffer-local-value
+                 'agent-recall--summarize-spinner-index work-buffer))
+           (text (buffer-local-value
+                  'agent-recall--summarize-response-text work-buffer))
+           (nchars (if text (length text) 0))
+           (frame (aref agent-recall--spinner-frames
+                        (mod idx (length agent-recall--spinner-frames)))))
+      (when (and (buffer-live-p progress-buf)
+                 marker (marker-position marker))
+        (with-current-buffer progress-buf
+          (let ((inhibit-read-only t))
+            (save-excursion
+              (goto-char marker)
+              (delete-region marker (line-end-position))
+              (insert (format " %s %d received" frame nchars)))))))))
+
+(defun agent-recall--summarize-start-spinner (work-buffer)
+  "Start the spinner timer for WORK-BUFFER."
+  (when (buffer-live-p work-buffer)
+    (with-current-buffer work-buffer
+      (when agent-recall--summarize-spinner-timer
+        (cancel-timer agent-recall--summarize-spinner-timer))
+      (setq agent-recall--summarize-spinner-index 0)
+      (setq agent-recall--summarize-spinner-timer
+            (run-with-timer
+             0.1 0.1
+             (lambda ()
+               (when (buffer-live-p work-buffer)
+                 (with-current-buffer work-buffer
+                   (cl-incf agent-recall--summarize-spinner-index))
+                 (agent-recall--summarize-refresh-status work-buffer))))))))
+
+(defun agent-recall--summarize-stop-spinner (work-buffer)
+  "Stop the spinner timer for WORK-BUFFER."
+  (when (buffer-live-p work-buffer)
+    (with-current-buffer work-buffer
+      (when agent-recall--summarize-spinner-timer
+        (cancel-timer agent-recall--summarize-spinner-timer)
+        (setq agent-recall--summarize-spinner-timer nil)))))
+
+(defun agent-recall--summarize-finalize-line (work-buffer progress-buffer text)
+  "Stop spinner, clear inline status, and insert TEXT as the final status.
+TEXT should include a trailing newline to complete the current line."
+  (agent-recall--summarize-stop-spinner work-buffer)
+  (when (buffer-live-p progress-buffer)
+    (with-current-buffer progress-buffer
+      (let ((inhibit-read-only t)
+            (marker (and (buffer-live-p work-buffer)
+                         (buffer-local-value
+                          'agent-recall--summarize-progress-marker
+                          work-buffer))))
+        (save-excursion
+          (if (and marker (marker-position marker))
+              (progn
+                (goto-char marker)
+                (delete-region marker (line-end-position)))
+            (goto-char (point-max)))
+          (insert text))))))
 
 (defun agent-recall--summarize-next (files work-buffer progress-buffer
                                            total done)
@@ -1545,9 +1633,13 @@ PROGRESS-BUFFER shows status.  TOTAL and DONE track progress."
             (insert (format "  [%d/%d] [%s] %s..."
                             (1+ done) total project
                             (file-name-nondirectory file))))))
-      ;; Reset accumulated text for this turn
+      ;; Reset accumulated text and set up progress tracking for this turn
       (with-current-buffer work-buffer
-        (setq agent-recall--summarize-response-text ""))
+        (setq agent-recall--summarize-response-text "")
+        (setq agent-recall--summarize-progress-marker
+              (with-current-buffer progress-buffer
+                (copy-marker (point-max)))))
+      (agent-recall--summarize-start-spinner work-buffer)
       (acp-send-request
        :client (buffer-local-value 'agent-recall--summarize-client work-buffer)
        :sync nil
@@ -1563,38 +1655,30 @@ PROGRESS-BUFFER shows status.  TOTAL and DONE track progress."
                                (with-current-buffer work-buffer
                                  (string-trim
                                   agent-recall--summarize-response-text))))
+                    (nchars (if text (length text) 0))
                     (summary-file (agent-recall--summary-file file)))
                (if (and text (not (string-empty-p text)))
                    (progn
                      (with-temp-file summary-file
                        (insert text "\n"))
-                     (when (buffer-live-p progress-buffer)
-                       (with-current-buffer progress-buffer
-                         (let ((inhibit-read-only t))
-                           (goto-char (point-max))
-                           (insert (format " wrote %s\n" summary-file))))))
-                 (when (buffer-live-p progress-buffer)
-                   (with-current-buffer progress-buffer
-                     (let ((inhibit-read-only t))
-                       (goto-char (point-max))
-                       (insert " FAILED (empty output)\n"))))))
+                     (agent-recall--summarize-finalize-line
+                      work-buffer progress-buffer
+                      (format " ✓ %d chars → %s\n"
+                              nchars (file-name-nondirectory summary-file))))
+                 (agent-recall--summarize-finalize-line
+                  work-buffer progress-buffer " ✗ empty output\n")))
            (error
-            (when (buffer-live-p progress-buffer)
-              (with-current-buffer progress-buffer
-                (let ((inhibit-read-only t))
-                  (goto-char (point-max))
-                  (insert (format " ERROR: %s\n"
-                                  (error-message-string err))))))))
+            (agent-recall--summarize-finalize-line
+             work-buffer progress-buffer
+             (format " ✗ %s\n" (error-message-string err)))))
          ;; Continue to next file
          (agent-recall--summarize-next
           rest work-buffer progress-buffer total (1+ done)))
        :on-failure
        (lambda (err)
-         (when (buffer-live-p progress-buffer)
-           (with-current-buffer progress-buffer
-             (let ((inhibit-read-only t))
-               (goto-char (point-max))
-               (insert (format " FAILED: %S\n" err)))))
+         (agent-recall--summarize-finalize-line
+          work-buffer progress-buffer
+          (format " ✗ %S\n" err))
          (agent-recall--summarize-next
           rest work-buffer progress-buffer total (1+ done)))))))
 
@@ -1637,6 +1721,7 @@ have a summary file are skipped.  Progress is shown in the
         ;; Set up ACP client in the hidden work buffer
         (with-current-buffer work-buffer
           (setq agent-recall--summarize-response-text "")
+          (setq agent-recall--summarize-progress-buffer progress-buffer)
           (setq client (funcall (alist-get :client-maker config) work-buffer))
           (setq agent-recall--summarize-client client)
           ;; Subscribe to notifications — accumulate agent_message_chunk text
@@ -1655,7 +1740,8 @@ have a summary file are skipped.  Progress is shown in the
                          (let-alist update
                            (setq agent-recall--summarize-response-text
                                  (concat agent-recall--summarize-response-text
-                                         .content.text)))))))))))
+                                         .content.text)))
+                         (agent-recall--summarize-refresh-status work-buffer)))))))))
           ;; Subscribe to errors
           (acp-subscribe-to-errors
            :client client
