@@ -1523,6 +1523,9 @@ Here is the transcript:
 (defvar-local agent-recall--summarize-timeout-timer nil
   "One-shot timer that fires when the current item exceeds the timeout.")
 
+(defvar-local agent-recall--summarize-start-time nil
+  "Time when the current item started processing, for countdown display.")
+
 (defvar-local agent-recall--summarize-generation 0
   "Counter incremented each time a new item starts processing.
 Used to detect and discard stale callbacks from timed-out items.")
@@ -1554,11 +1557,12 @@ Used to detect and discard stale callbacks from timed-out items.")
             agent-recall--summarize-response-text nil
             agent-recall--summarize-spinner-timer nil
             agent-recall--summarize-timeout-timer nil
+            agent-recall--summarize-start-time nil
             agent-recall--summarize-progress-marker nil
             agent-recall--summarize-progress-buffer nil))))
 
 (defun agent-recall--summarize-refresh-status (work-buffer)
-  "Update spinner and received char count in the progress buffer.
+  "Update spinner, received char count, and timeout countdown in the progress buffer.
 Uses buffer-local state from WORK-BUFFER to render inline status."
   (when (buffer-live-p work-buffer)
     (let* ((progress-buf (buffer-local-value
@@ -1571,7 +1575,14 @@ Uses buffer-local state from WORK-BUFFER to render inline status."
                   'agent-recall--summarize-response-text work-buffer))
            (nchars (if text (length text) 0))
            (frame (aref agent-recall--spinner-frames
-                        (mod idx (length agent-recall--spinner-frames)))))
+                        (mod idx (length agent-recall--spinner-frames))))
+           (start-time (buffer-local-value
+                        'agent-recall--summarize-start-time work-buffer))
+           (remaining (if start-time
+                         (max 0 (- agent-recall-summarize-timeout
+                                   (floor (float-time
+                                           (time-subtract nil start-time)))))
+                       agent-recall-summarize-timeout)))
       (when (and (buffer-live-p progress-buf)
                  marker (marker-position marker))
         (with-current-buffer progress-buf
@@ -1579,7 +1590,8 @@ Uses buffer-local state from WORK-BUFFER to render inline status."
             (save-excursion
               (goto-char marker)
               (delete-region marker (line-end-position))
-              (insert (format " %s %d received" frame nchars)))))))))
+              (insert (format " %s %d received [%ds left]"
+                              frame nchars remaining)))))))))
 
 (defun agent-recall--summarize-start-spinner (work-buffer)
   "Start the spinner timer for WORK-BUFFER."
@@ -1654,6 +1666,7 @@ PROGRESS-BUFFER shows status.  TOTAL and DONE track progress."
       ;; Reset accumulated text and set up progress tracking for this turn
       (with-current-buffer work-buffer
         (setq agent-recall--summarize-response-text "")
+        (setq agent-recall--summarize-start-time (current-time))
         (setq agent-recall--summarize-progress-marker
               (with-current-buffer progress-buffer
                 (copy-marker (point-max))))
