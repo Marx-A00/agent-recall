@@ -2,6 +2,8 @@
 
 Search, browse, and resume [agent-shell](https://github.com/xenodium/agent-shell) conversation transcripts.
 
+![total-recall](total-recall.png)
+
 ![agent-recall](agent-recall.png)
 
 ## agent-recall
