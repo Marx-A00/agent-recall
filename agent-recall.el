@@ -1562,7 +1562,7 @@ Used to detect and discard stale callbacks from timed-out items.")
             agent-recall--summarize-progress-buffer nil))))
 
 (defun agent-recall--summarize-refresh-status (work-buffer)
-  "Update spinner, received char count, and timeout countdown in the progress buffer.
+  "Update spinner, char count, and timeout countdown in progress buffer.
 Uses buffer-local state from WORK-BUFFER to render inline status."
   (when (buffer-live-p work-buffer)
     (let* ((progress-buf (buffer-local-value
