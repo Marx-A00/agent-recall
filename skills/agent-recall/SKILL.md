@@ -29,6 +29,10 @@ emacsclient --eval '(agent-recall-list-projects-string)'
 
 ## Step 2: Search
 
+Both search functions accept **ripgrep regex patterns** -- use this to
+write precise, structured queries that match more in a single call
+instead of issuing many simple string searches.
+
 ### Search summaries first (preferred)
 
 If the user has run `M-x agent-recall-summarize`, structured summaries
@@ -53,6 +57,44 @@ Both functions accept an optional second argument to limit results
 ```bash
 emacsclient --eval '(agent-recall-search-string "your query" 10)'
 ```
+
+### Regex patterns
+
+Queries use ripgrep regex syntax (Rust regex). Prefer a single
+well-crafted regex over multiple simple searches.
+
+**Alternation** -- match any of several terms in one call:
+
+```bash
+emacsclient --eval '(agent-recall-search-summaries-string "deadletter|dead.letter|dlq")'
+```
+
+**Grouping + alternation** -- combine alternatives with context:
+
+```bash
+emacsclient --eval '(agent-recall-search-string "(kafka|sqs).*(retry|backoff)")'
+```
+
+**Word boundaries** -- avoid partial matches on common substrings:
+
+```bash
+emacsclient --eval '(agent-recall-search-string "\\bapi\\b.*\\b(timeout|latency)\\b")'
+```
+
+**Character classes** -- match variations of a term:
+
+```bash
+emacsclient --eval '(agent-recall-search-string "deploy(ment|ed|ing)?.*(fail|error|rollback)")'
+```
+
+**Wildcards** -- bridge gaps between terms:
+
+```bash
+emacsclient --eval '(agent-recall-search-string "Tags:.*\\b(clojure|kafka|auth)")'
+```
+
+Note: searches are case-insensitive by default.  Backslashes in
+regex must be escaped for the Elisp string reader (`\\b` not `\b`).
 
 ## Step 3: Read full transcripts
 
@@ -95,7 +137,9 @@ Transcripts are markdown files with this structure:
 ## Search tips
 
 - Search summaries first -- they contain Topic, Problem, Outcome, and Tags
-- Start with broad queries and narrow down
+- Use regex alternation (`term1|term2|term3`) to cover synonyms in one call
+- Use grouping to combine related concepts: `(auth|login).*(fail|error)`
+- Use `\\b` word boundaries to avoid false positives on short terms
 - For error messages, search distinctive parts only
 - Results are sorted by most recently modified first
 - Use the Read tool on matching files to get the full conversation context
