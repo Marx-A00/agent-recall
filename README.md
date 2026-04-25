@@ -311,6 +311,7 @@ Evil users get additional bindings in normal state:
 | `agent-recall-stats` | Display transcript collection statistics |
 | `agent-recall-track-sessions` | Hook: auto-embed session IDs in new transcripts |
 | `agent-recall-backfill` | Retroactively match old transcripts to session IDs |
+| `agent-recall-summarize` | Generate structured summaries for all transcripts |
 | `agent-recall-invalidate-cache` | Clear in-memory caches |
 
 ## How it works
@@ -333,6 +334,42 @@ The main index is persisted to disk and loads automatically. Retroactive matchin
 ### Search directory
 
 For search backends that need a single root directory (deadgrep, counsel-rg, consult-ripgrep), agent-recall creates a temporary symlink directory alongside the index file pointing to all indexed transcript directories.
+
+## Claude Code Skill
+
+agent-recall includes a [Claude Code skill](https://docs.anthropic.com/en/docs/claude-code/skills) that lets your AI agents search past transcripts as a knowledge base. When running inside agent-shell, agents can look up how similar problems were solved before, recall previous decisions, and retrieve context from earlier sessions.
+
+### Skill installation
+
+Symlink the skill to your Claude Code skills directory:
+
+```bash
+ln -s /path/to/agent-recall/skills/agent-recall ~/.claude/skills/agent-recall
+```
+
+Once installed, agents can search your transcript history when you ask things like "how did we solve X before?" or "search past conversations for Y".
+
+### Transcript summarization
+
+For better search quality, you can generate structured summaries of your transcripts. Summaries contain Topic, Problem, Outcome, and Tags — making them far more useful for semantic search than raw transcripts full of tool calls and code blocks.
+
+```
+M-x agent-recall-summarize
+```
+
+This launches an agent-shell session and sends each un-summarized transcript through the LLM. Summary files are saved as `TIMESTAMP.summary.md` next to the original transcripts. Transcripts that already have summaries are skipped.
+
+The skill automatically searches summaries first and falls back to raw transcripts when no summaries are available.
+
+### Programmatic API
+
+These functions are designed for use from `emacsclient --eval`:
+
+| Function | Description |
+|----------|-------------|
+| `(agent-recall-search-string QUERY)` | Search transcripts, return results as string |
+| `(agent-recall-search-summaries-string QUERY)` | Search summary files only |
+| `(agent-recall-list-projects-string)` | List indexed projects and transcript counts |
 
 ## Contributing
 
