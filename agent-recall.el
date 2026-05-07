@@ -142,8 +142,34 @@ This is the conventional path used by agent-shell."
   :group 'agent-recall)
 
 (defcustom agent-recall-file-pattern "*.md"
-  "Glob pattern matching transcript files within transcript directories."
+  "Glob pattern matching transcript files within transcript directories.
+Also see `agent-recall-file-patterns' for multi-format support."
   :type 'string
+  :group 'agent-recall)
+
+(defcustom agent-recall-file-patterns '("*.md" "*.org")
+  "List of glob patterns matching transcript files.
+Used by `agent-recall-reindex' to find transcripts in all supported
+formats.  The single-pattern `agent-recall-file-pattern' is still
+honored by search backends for backward compatibility."
+  :type '(repeat string)
+  :group 'agent-recall)
+
+(defcustom agent-recall-extra-transcript-dirs nil
+  "Additional directories containing transcript files to index directly.
+Unlike `agent-recall-search-paths' (which scans recursively for
+`.agent-shell/transcripts/' subdirectories), these directories are
+indexed as-is.  Use this for transcripts stored outside the conventional
+layout, e.g. org-mode transcripts from `agent-shell-org-transcript'.
+
+Each entry is a plist (:dir DIR :project PROJECT) where:
+  :dir      - the directory path (required)
+  :project  - display name (optional; derived from file properties if nil)
+
+Example:
+  (setq agent-recall-extra-transcript-dirs
+        \\='((:dir \"~/org/agent-shell/\")))"
+  :type '(repeat (plist :key-type symbol :value-type string))
   :group 'agent-recall)
 
 (defcustom agent-recall-rg-executable "rg"
@@ -389,6 +415,33 @@ returns `/path/to/project'."
          (agent-shell-dir (directory-file-name (file-name-directory sans-slash))))
     (directory-file-name (file-name-directory agent-shell-dir))))
 
+(defun agent-recall--org-file-p (file)
+  "Return non-nil if FILE is an org-mode transcript."
+  (and file (string-suffix-p ".org" file)))
+
+(defun agent-recall--org-read-property (file property)
+  "Read a #+PROPERTY: PROPERTY value from org transcript FILE header."
+  (when (and file (file-exists-p file))
+    (with-temp-buffer
+      (insert-file-contents file nil 0 1000)
+      (goto-char (point-min))
+      (when (re-search-forward
+             (format "^#\\+PROPERTY:\\s-+%s\\s-+\\(.+\\)$" (regexp-quote property))
+             nil t)
+        (string-trim (match-string 1))))))
+
+(defun agent-recall--project-name-from-file (file)
+  "Derive a project name from transcript FILE metadata.
+For org files, reads the Working_Directory property.
+For markdown files, falls back to `agent-recall--project-name'."
+  (if (agent-recall--org-file-p file)
+      (let ((working-dir (agent-recall--org-read-property file "Working_Directory")))
+        (if (and working-dir (not (string-empty-p working-dir)))
+            (file-name-nondirectory (directory-file-name working-dir))
+          (file-name-nondirectory
+           (directory-file-name (file-name-directory file)))))
+    (agent-recall--project-name (file-name-directory file))))
+
 (defun agent-recall--transcript-dir-from-file (file)
   "Return the transcript directory containing FILE."
   (file-name-directory file))
@@ -407,18 +460,18 @@ re-read it from disk."
 ;;;###autoload
 (defun agent-recall-reindex ()
   "Rebuild the transcript index by scanning `agent-recall-search-paths'.
-This is the only command that crawls the filesystem.  Run it once
-after installing agent-recall, or to pick up transcripts created
-outside of agent-shell sessions tracked by the hook."
+Also indexes `agent-recall-extra-transcript-dirs' directly.
+Run once after installing agent-recall, or to pick up transcripts
+created outside of agent-shell sessions tracked by the hook."
   (interactive)
-  (unless agent-recall-search-paths
+  (unless (or agent-recall-search-paths agent-recall-extra-transcript-dirs)
     (user-error "`agent-recall-search-paths' is not set.  Configure it first, e.g.:
   (setq agent-recall-search-paths '(\"~/projects\" \"~/work\"))"))
   (let ((dirs '())
         (new-index (make-hash-table :test 'equal))
         (file-count 0)
         (project-count 0))
-    ;; Discover transcript directories (same find logic as before)
+    ;; Discover transcript directories via recursive scan
     (dolist (root agent-recall-search-paths)
       (when (file-directory-p root)
         (let* ((cmd (format "find %s -maxdepth %d -path %s -type d 2>/dev/null"
@@ -431,10 +484,10 @@ outside of agent-shell sessions tracked by the hook."
           (setq dirs (append dirs found)))))
     (setq dirs (delete-dups dirs))
     (setq project-count (length dirs))
-    ;; Index every transcript file
+    ;; Index transcript files from discovered directories
     (dolist (dir dirs)
       (let ((project (agent-recall--project-name dir))
-            (files (directory-files dir t "\\.md\\'" t)))
+            (files (agent-recall--list-transcript-files dir)))
         (dolist (file files)
           (let* ((basename (file-name-sans-extension (file-name-nondirectory file)))
                  (preview (agent-recall--transcript-preview file))
@@ -447,6 +500,28 @@ outside of agent-shell sessions tracked by the hook."
                            :preview (or preview "(empty)"))
                      new-index)
             (cl-incf file-count)))))
+    ;; Index extra transcript directories (e.g. org-mode transcripts)
+    (dolist (entry agent-recall-extra-transcript-dirs)
+      (let* ((dir (expand-file-name (plist-get entry :dir)))
+             (fixed-project (plist-get entry :project)))
+        (when (file-directory-p dir)
+          (cl-incf project-count)
+          (let ((files (agent-recall--list-transcript-files dir)))
+            (dolist (file files)
+              (let* ((project (or fixed-project
+                                  (agent-recall--project-name-from-file file)))
+                     (basename (file-name-sans-extension
+                                (file-name-nondirectory file)))
+                     (preview (agent-recall--transcript-preview file))
+                     (session-id (agent-recall--resolve-session-id file)))
+                (puthash file
+                         (list :project project
+                               :dir (directory-file-name dir)
+                               :timestamp basename
+                               :session-id session-id
+                               :preview (or preview "(empty)"))
+                         new-index)
+                (cl-incf file-count)))))))
     (setq agent-recall--index new-index
           agent-recall--index-loaded-p t)
     (agent-recall--index-save)
@@ -462,6 +537,27 @@ outside of agent-shell sessions tracked by the hook."
                            without-session)
                  "")))))
 
+(defun agent-recall--list-transcript-files (dir)
+  "List all transcript files in DIR matching `agent-recall-file-patterns'."
+  (let ((files '()))
+    (dolist (pattern agent-recall-file-patterns)
+      (let ((regex (wildcard-to-regexp pattern)))
+        (dolist (file (directory-files dir t regex t))
+          (push file files))))
+    (delete-dups files)))
+
+(defun agent-recall--file-patterns-as-includes ()
+  "Return `agent-recall-file-patterns' as grep --include arguments."
+  (mapconcat (lambda (pat)
+               (format "--include=%s" (shell-quote-argument pat)))
+             agent-recall-file-patterns " "))
+
+(defun agent-recall--file-patterns-as-globs ()
+  "Return `agent-recall-file-patterns' as ripgrep --glob arguments."
+  (mapconcat (lambda (pat)
+               (format "--glob %s" (shell-quote-argument pat)))
+             agent-recall-file-patterns " "))
+
 ;;;; Search
 
 (defun agent-recall--ensure-symlink-dir ()
@@ -476,7 +572,10 @@ The directory lives alongside `agent-recall-index-file'."
     (make-directory base t)
     (let ((seen (make-hash-table :test 'equal)))
       (dolist (dir dirs)
-        (let* ((project (agent-recall--project-name dir))
+        (let* ((project (condition-case nil
+                            (agent-recall--project-name dir)
+                          (error (file-name-nondirectory
+                                  (directory-file-name dir)))))
                (count (gethash project seen 0))
                (link-name (if (= count 0) project
                             (format "%s-%d" project count))))
@@ -507,9 +606,9 @@ an agent-recall search buffer exists in the current session."
   "Search DIRS for QUERY using grep with results in `grep-mode'.
 Falls back to standard grep, available on all systems."
   (let* ((dir-args (mapconcat #'shell-quote-argument dirs " "))
-         (cmd (format "grep -rnH -C %d --include=%s -- %s %s"
+         (cmd (format "grep -rnH -C %d %s -- %s %s"
                       agent-recall-search-context-lines
-                      (shell-quote-argument agent-recall-file-pattern)
+                      (agent-recall--file-patterns-as-includes)
                       (shell-quote-argument query)
                       dir-args)))
     (grep cmd)
@@ -538,9 +637,12 @@ DIRS are unused; counsel-rg searches the symlink directory instead."
     (user-error "Counsel is not installed.  Install it or set `agent-recall-search-function' to `grep'"))
   (let* ((dir (agent-recall--ensure-symlink-dir))
          (counsel-rg-base-command
-          (list "rg" "--max-columns" "240" "--with-filename"
-                "--no-heading" "--line-number" "--color" "never"
-                "--follow" "--glob" agent-recall-file-pattern "%s")))
+          (append (list "rg" "--max-columns" "240" "--with-filename"
+                        "--no-heading" "--line-number" "--color" "never"
+                        "--follow")
+                  (cl-mapcan (lambda (pat) (list "--glob" pat))
+                             agent-recall-file-patterns)
+                  (list "%s"))))
     (counsel-rg query dir "" "Recall: ")
     (when (and agent-recall-auto-transcript-mode
                (agent-recall--transcript-file-p (buffer-file-name)))
@@ -554,8 +656,8 @@ DIRS are unused; consult-ripgrep searches the symlink directory instead."
   (let* ((dir (agent-recall--ensure-symlink-dir))
          (consult-ripgrep-args
           (concat consult-ripgrep-args
-                  " --follow"
-                  " --glob " agent-recall-file-pattern)))
+                  " --follow "
+                  (agent-recall--file-patterns-as-globs))))
     (consult-ripgrep dir query)
     (when (and agent-recall-auto-transcript-mode
                (agent-recall--transcript-file-p (buffer-file-name)))
@@ -625,13 +727,21 @@ Each entry also carries its timestamp for sorting."
 
 (defun agent-recall--transcript-preview (file)
   "Extract a one-line preview from transcript FILE.
-Returns the first user message, truncated."
+Returns the first user message, truncated.  Supports both markdown
+and org-mode transcript formats."
   (with-temp-buffer
-    (insert-file-contents file nil 0 2000)
+    (insert-file-contents file nil 0 3000)
     (goto-char (point-min))
-    (if (re-search-forward "^## User.*\n+\\(?:> \\)?\\(.+\\)" nil t)
-        (truncate-string-to-width (string-trim (match-string 1)) 80)
-      "(empty)")))
+    (let ((regex (if (agent-recall--org-file-p file)
+                     "^\\*\\* User.*\n+\\(.+\\)"
+                   "^## User.*\n+\\(?:> \\)?\\(.+\\)")))
+      (if (re-search-forward regex nil t)
+          (let ((text (string-trim (match-string 1))))
+            (when (and (agent-recall--org-file-p file)
+                       (string-prefix-p "#+begin_quote" text))
+              (setq text "(empty)"))
+            (truncate-string-to-width text 80))
+        "(empty)"))))
 
 (defun agent-recall--candidate-file (candidate)
   "Extract the file path stored as a text property on CANDIDATE."
@@ -915,12 +1025,17 @@ When the transcript has a resumable session ID, press `r' to resume."
 
 (defun agent-recall--transcript-file-p (file)
   "Return non-nil if FILE is inside an agent-shell transcript directory.
-Also matches files opened via the agent-recall search symlink directory."
+Also matches files opened via the agent-recall search symlink directory,
+and files in `agent-recall-extra-transcript-dirs'."
   (and file
        (or (string-match-p (concat "/" (regexp-quote agent-recall-transcript-dir-name) "/") file)
            (and agent-recall--symlink-dir
                 (string-prefix-p (expand-file-name agent-recall--symlink-dir)
-                                 (expand-file-name file))))))
+                                 (expand-file-name file)))
+           (cl-some (lambda (entry)
+                      (let ((dir (expand-file-name (plist-get entry :dir))))
+                        (string-prefix-p dir (expand-file-name file))))
+                    agent-recall-extra-transcript-dirs))))
 
 (defun agent-recall--maybe-enable-transcript-mode ()
   "Enable `agent-recall-transcript-mode' if visiting a transcript file."
@@ -943,15 +1058,19 @@ Also matches files opened via the agent-recall search symlink directory."
     (agent-recall--start-resume session-id file)))
 
 (defun agent-recall--read-working-directory (file)
-  "Extract the Working Directory from transcript FILE header."
+  "Extract the Working Directory from transcript FILE header.
+Supports both markdown and org-mode transcript formats."
   (when (file-exists-p file)
     (with-temp-buffer
       (insert-file-contents file nil 0 500)
       (goto-char (point-min))
-      (when (re-search-forward "^\\*\\*Working Directory:\\*\\* \\(.+\\)" nil t)
-        (let ((dir (string-trim (match-string 1))))
-          (when (file-directory-p dir)
-            dir))))))
+      (let ((regex (if (agent-recall--org-file-p file)
+                       "^#\\+PROPERTY:\\s-+Working_Directory\\s-+\\(.+\\)"
+                     "^\\*\\*Working Directory:\\*\\* \\(.+\\)")))
+        (when (re-search-forward regex nil t)
+          (let ((dir (string-trim (match-string 1))))
+            (when (file-directory-p dir)
+              dir)))))))
 
 (defun agent-recall--read-agent-name (file)
   "Extract the Agent from transcript FILE header."
@@ -1118,19 +1237,29 @@ Only shows transcripts that have resolvable session IDs."
 
 (defun agent-recall--write-session-id-to-file (filepath session-id)
   "Insert SESSION-ID into the header of transcript at FILEPATH.
-Finds the `---' separator in the header and inserts a
-`**Session:** UUID' line before it."
+For markdown files, inserts `**Session:** UUID' before the `---' separator.
+For org files, inserts `#+PROPERTY: Session UUID' after existing properties."
   (when (and filepath (file-exists-p filepath) session-id)
     (with-temp-buffer
       (insert-file-contents filepath)
       (goto-char (point-min))
-      ;; Only write if not already present
-      (unless (re-search-forward "^\\*\\*Session:\\*\\*" nil t)
-        (goto-char (point-min))
-        (when (re-search-forward "^---$" nil t)
-          (goto-char (match-beginning 0))
-          (insert (format "**Session:** %s\n\n" session-id))
-          (write-region (point-min) (point-max) filepath nil 'no-message))))))
+      (if (agent-recall--org-file-p filepath)
+          (unless (re-search-forward "^#\\+PROPERTY:\\s-+Session\\s-" nil t)
+            (goto-char (point-min))
+            (let ((last-prop nil))
+              (while (re-search-forward "^#\\+PROPERTY:" nil t)
+                (setq last-prop (line-end-position)))
+              (when last-prop
+                (goto-char last-prop)
+                (end-of-line)
+                (insert (format "\n#+PROPERTY: Session %s" session-id))
+                (write-region (point-min) (point-max) filepath nil 'no-message))))
+        (unless (re-search-forward "^\\*\\*Session:\\*\\*" nil t)
+          (goto-char (point-min))
+          (when (re-search-forward "^---$" nil t)
+            (goto-char (match-beginning 0))
+            (insert (format "**Session:** %s\n\n" session-id))
+            (write-region (point-min) (point-max) filepath nil 'no-message)))))))
 
 ;;;###autoload
 (defun agent-recall-track-sessions ()
@@ -1190,29 +1319,34 @@ Add to your config:
 
 (defun agent-recall--read-embedded-session-id (file)
   "Read the session ID from transcript FILE header, if present.
-Looks for a `**Session:** UUID' line in the first 1000 bytes."
+Supports both markdown (`**Session:** UUID') and org (`#+PROPERTY: Session UUID')."
   (when (file-exists-p file)
-    (with-temp-buffer
-      (insert-file-contents file nil 0 1000)
-      (goto-char (point-min))
-      (when (re-search-forward
-             "^\\*\\*Session:\\*\\*\\s-+\\([0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{12\\}\\)"
-             nil t)
-        (match-string 1)))))
+    (let ((uuid-re "[0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{12\\}"))
+      (with-temp-buffer
+        (insert-file-contents file nil 0 1500)
+        (goto-char (point-min))
+        (when (re-search-forward
+               (if (agent-recall--org-file-p file)
+                   (format "^#\\+PROPERTY:\\s-+Session\\s-+\\(%s\\)" uuid-re)
+                 (format "^\\*\\*Session:\\*\\*\\s-+\\(%s\\)" uuid-re))
+               nil t)
+          (match-string 1))))))
 
 (defun agent-recall--parse-transcript-timestamp (file)
   "Extract the `Started' timestamp from transcript FILE header.
-Returns an Emacs time value (as from `encode-time'), or nil."
+Returns an Emacs time value (as from `encode-time'), or nil.
+Supports markdown (`**Started:**') and org (`#+DATE:') formats."
   (when (file-exists-p file)
     (with-temp-buffer
       (insert-file-contents file nil 0 500)
       (goto-char (point-min))
-      (when (re-search-forward
-             "^\\*\\*Started:\\*\\*\\s-+\\(.+\\)$"
-             nil t)
-        (let ((decoded (parse-time-string (match-string 1))))
-          (when (nth 5 decoded)
-            (encode-time (decoded-time-set-defaults decoded))))))))
+      (let ((regex (if (agent-recall--org-file-p file)
+                       "^#\\+DATE:\\s-+\\(.+\\)$"
+                     "^\\*\\*Started:\\*\\*\\s-+\\(.+\\)$")))
+        (when (re-search-forward regex nil t)
+          (let ((decoded (parse-time-string (match-string 1))))
+            (when (nth 5 decoded)
+              (encode-time (decoded-time-set-defaults decoded)))))))))
 
 (defun agent-recall--parse-iso8601-timestamp (iso-string)
   "Parse ISO-STRING into an Emacs time value, or nil if unparseable."
@@ -1304,21 +1438,30 @@ Returns an alist of (SESSION-ID . CREATED-TIME)."
 
 (defun agent-recall--transcript-first-message (file)
   "Extract the full first user message from transcript FILE.
-Returns the message text, or nil."
+Returns the message text, or nil.  Supports markdown and org formats."
   (when (file-exists-p file)
-    (with-temp-buffer
-      (insert-file-contents file nil 0 3000)
-      (goto-char (point-min))
-      (when (re-search-forward "^## User.*\n+" nil t)
-        (let* ((start (point))
-               (end (if (re-search-forward "^## " nil t)
-                        (match-beginning 0)
-                      (point-max)))
-               (text (string-trim (buffer-substring-no-properties start end))))
-          (when (string-prefix-p "> " text)
-            (setq text (substring text 2)))
-          (when (> (length text) 0)
-            text))))))
+    (let ((org-p (agent-recall--org-file-p file)))
+      (with-temp-buffer
+        (insert-file-contents file nil 0 5000)
+        (goto-char (point-min))
+        (let ((heading-re (if org-p "^\\*\\* User.*\n+" "^## User.*\n+"))
+              (next-re (if org-p "^\\*\\* " "^## ")))
+          (when (re-search-forward heading-re nil t)
+            (let* ((start (point))
+                   (end (if (re-search-forward next-re nil t)
+                            (match-beginning 0)
+                          (point-max)))
+                   (text (string-trim (buffer-substring-no-properties start end))))
+              (cond
+               ((string-prefix-p "> " text)
+                (setq text (substring text 2)))
+               ((and org-p (string-prefix-p "#+begin_quote" text))
+                (setq text (replace-regexp-in-string
+                            "\\`#\\+begin_quote\n?" "" text))
+                (setq text (replace-regexp-in-string
+                            "\n?#\\+end_quote\\'" "" text))))
+              (when (> (length text) 0)
+                text))))))))
 
 (defun agent-recall--jsonl-first-message (file)
   "Extract the first real user message from JSONL session FILE.
