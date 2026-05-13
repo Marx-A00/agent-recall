@@ -16,6 +16,7 @@ Features:
 
 - **Search** all transcripts with built-in grep (no external dependencies) or optional [ripgrep](https://github.com/BurntSushi/ripgrep) backends
 - **Live search** with real-time filtering via counsel-rg or consult-ripgrep
+- **Aggregated Consult search** with one result per matching transcript
 - **Browse** transcripts by project and date with live preview (consult or ivy/counsel)
 - **Resume** past agent-shell sessions directly from a transcript
 - **Track** session IDs automatically via hook
@@ -195,6 +196,8 @@ To automatically embed session IDs in new transcripts (enabling instant resume):
 
 `M-x agent-recall-search-live` opens a live-filtering search. It auto-selects the best available backend (`counsel-rg` or `consult-ripgrep`); falls back to a one-shot search if neither is installed.
 
+`M-x agent-recall-consult-search` provides a richer Consult interface when `consult` and `ripgrep` are installed. It groups matches by transcript and shows candidates in `[project] [match-count] date first-match` format, then jumps to the first match in the selected transcript.
+
 ### Browsing transcripts
 
 `M-x agent-recall-browse` shows a completion list of all transcripts in `[project] timestamp` format with preview annotations. Selecting a transcript opens it in `agent-recall-transcript-mode`.
@@ -339,6 +342,7 @@ Evil users get additional bindings in normal state:
 | `agent-recall-reindex` | Rebuild transcript index from filesystem |
 | `agent-recall-search` | Search all transcripts for a query |
 | `agent-recall-search-live` | Live-filtering search with auto backend selection |
+| `agent-recall-consult-search` | Aggregated Consult search grouped by transcript |
 | `agent-recall-browse` | Browse transcripts by project with previews |
 | `agent-recall-resume` | Resume a past session (pick from all resumable) |
 | `agent-recall-resume-current` | Resume session from current transcript |
