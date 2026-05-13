@@ -77,6 +77,9 @@
 (require 'grep)
 (require 'iso8601)
 (require 'json)
+(require 'map)
+(require 'seq)
+(require 'subr-x)
 
 (defvar deadgrep-extra-arguments)
 (defvar counsel-rg-base-command)
@@ -945,16 +948,60 @@ Also matches files opened via the agent-recall search symlink directory."
           (when (file-directory-p dir)
             dir))))))
 
+(defun agent-recall--read-agent-name (file)
+  "Extract the Agent from transcript FILE header."
+  (when (file-exists-p file)
+    (with-temp-buffer
+      (insert-file-contents file nil 0 500)
+      (goto-char (point-min))
+      (when (re-search-forward "^\\*\\*Agent:\\*\\* \\(.+\\)" nil t)
+        (string-trim (match-string 1))))))
+
+(defun agent-recall--normalize-agent-name (name)
+  "Normalize agent NAME for matching transcript headers to configs."
+  (when name
+    (replace-regexp-in-string
+     "[^[:alnum:]]+" ""
+     (downcase (string-trim (format "%s" name))))))
+
+(defun agent-recall--agent-config-matches-name-p (config name)
+  "Return non-nil if agent CONFIG matches transcript agent NAME."
+  (let ((normalized-name (agent-recall--normalize-agent-name name)))
+    (and normalized-name
+         (seq-some
+          (lambda (config-name)
+            (equal normalized-name
+                   (agent-recall--normalize-agent-name config-name)))
+          (list (map-elt config :identifier)
+                (map-elt config :mode-line-name)
+                (map-elt config :buffer-name))))))
+
+(defun agent-recall--agent-config-for-transcript (file)
+  "Return the `agent-shell' config matching transcript FILE's Agent header."
+  (when-let ((agent-name (agent-recall--read-agent-name file)))
+    (seq-find (lambda (config)
+                (agent-recall--agent-config-matches-name-p config agent-name))
+              agent-shell-agent-configs)))
+
 (defun agent-recall--start-resume (session-id &optional transcript-file)
   "Resume SESSION-ID using agent-shell, skipping shell picker.
-Uses `agent-shell--resolve-preferred-config' to auto-select the agent,
-then starts a new shell buffer with the session loaded.
+Uses the transcript Agent header to select the original agent when
+available, then starts a new shell buffer with the session loaded.
 When TRANSCRIPT-FILE is provided, sets working directory from the transcript."
-  (let* ((default-directory (or (and transcript-file
+  (let* ((transcript-agent (and transcript-file
+                                (agent-recall--read-agent-name transcript-file)))
+         (default-directory (or (and transcript-file
                                      (agent-recall--read-working-directory transcript-file))
                                 default-directory))
-         (config (or (agent-shell--resolve-preferred-config)
-                     (agent-shell-select-config :prompt "Resume with agent: ")
+         (config (or (and transcript-file
+                          (agent-recall--agent-config-for-transcript transcript-file))
+                     (and (not transcript-agent)
+                          (agent-shell--resolve-preferred-config))
+                     (agent-shell-select-config
+                      :prompt (if transcript-agent
+                                  (format "Resume %s session with agent: "
+                                          transcript-agent)
+                                "Resume with agent: "))
                      (error "No agent config found")))
          (shell-buffer (agent-shell--start :config config
                                            :session-id session-id

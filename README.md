@@ -243,6 +243,8 @@ Requires agent-shell to be loaded.
 
 When you resume a session, agent-recall defaults to appending new messages to the **original transcript file** rather than creating a new one. This keeps the full conversation history in a single file.
 
+agent-recall uses the transcript's `**Agent:**` header to resume with the same agent configuration when possible. If the header is missing, it falls back to your `agent-shell` preferred/default selection.
+
 If you would like to create new transcripts instead:
 
 ```elisp
