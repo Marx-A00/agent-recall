@@ -245,6 +245,8 @@ When you resume a session, agent-recall defaults to appending new messages to th
 
 agent-recall uses the transcript's `**Agent:**` header to resume with the same agent configuration when possible. If the header is missing, it falls back to your `agent-shell` preferred/default selection.
 
+> **Note:** Transcripts created by older versions of agent-shell may have a shortened agent name in the header (e.g., `Claude` instead of `Claude Code`). These won't auto-match a config and will prompt you to select one manually.
+
 If you would like to create new transcripts instead:
 
 ```elisp
