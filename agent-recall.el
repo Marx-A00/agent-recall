@@ -732,6 +732,8 @@ Returns the selected candidate string, or nil."
      (if (eq action 'metadata)
          `(metadata
            (category . agent-recall-transcript)
+           (display-sort-function . identity)
+           (cycle-sort-function . identity)
            (annotation-function . ,annotate-fn))
        (complete-with-action action candidates string pred)))
    nil t nil 'agent-recall--browse-history
