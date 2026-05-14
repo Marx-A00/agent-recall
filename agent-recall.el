@@ -278,6 +278,9 @@ Values are session ID strings, or the symbol `none' for unresolvable.")
 (defvar-local agent-recall--session-id-written-p nil
   "Non-nil if session ID has already been written to this buffer's transcript.")
 
+(defvar-local agent-recall--transcript-session-id nil
+  "The session ID associated with the current transcript buffer.")
+
 (defvar-local agent-recall--search-buffer-p nil
   "Non-nil in buffers created by agent-recall search commands.")
 
