@@ -1214,6 +1214,17 @@ Returns an Emacs time value (as from `encode-time'), or nil."
           (when (nth 5 decoded)
             (encode-time (decoded-time-set-defaults decoded))))))))
 
+(defun agent-recall--transcript-working-dir (file)
+  "Extract the Working Directory from transcript FILE header.
+Returns the directory path as a string (without trailing slash), or nil."
+  (when (file-exists-p file)
+    (with-temp-buffer
+      (insert-file-contents file nil 0 500)
+      (goto-char (point-min))
+      (when (re-search-forward
+             "^\\*\\*Working Directory:\\*\\*\\s-+\\(.+\\)$" nil t)
+        (directory-file-name (match-string 1))))))
+
 (defun agent-recall--parse-iso8601-timestamp (iso-string)
   "Parse ISO-STRING into an Emacs time value, or nil if unparseable."
   (when iso-string
@@ -1427,7 +1438,11 @@ Returns session ID string, or nil if unresolvable."
               ;; 2. Try hybrid matching (timestamp + message content)
               (let* ((transcript-dir (agent-recall--transcript-dir-from-file file))
                      (project-root (agent-recall--project-root transcript-dir))
-                     (claude-dir (agent-recall--claude-project-dir project-root))
+                     (claude-dir (or (agent-recall--claude-project-dir project-root)
+                                     ;; Fall back to Working Directory header
+                                     ;; when transcripts live outside the project
+                                     (agent-recall--claude-project-dir
+                                      (agent-recall--transcript-working-dir file))))
                      (transcript-time (agent-recall--parse-transcript-timestamp file)))
                 (when claude-dir
                   (let* ((index-sessions (agent-recall--load-sessions-index claude-dir))
@@ -1491,7 +1506,9 @@ Results are displayed in the `*agent-recall-backfill*' buffer."
                   (t
                    (let* ((transcript-dir (agent-recall--transcript-dir-from-file file))
                           (project-root (agent-recall--project-root transcript-dir))
-                          (claude-dir (agent-recall--claude-project-dir project-root))
+                          (claude-dir (or (agent-recall--claude-project-dir project-root)
+                                          (agent-recall--claude-project-dir
+                                           (agent-recall--transcript-working-dir file))))
                           (transcript-time (agent-recall--parse-transcript-timestamp file))
                           (session-id nil))
                      (when claude-dir
