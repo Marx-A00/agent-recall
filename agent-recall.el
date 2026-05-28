@@ -1384,9 +1384,8 @@ Returns session ID string, or nil."
                 (let* ((session-id (car entry))
                        (session-time (cdr entry)))
                   (when session-time
-                    (let ((delta (float-time (time-subtract session-time transcript-time))))
-                      (when (and (>= delta 0)
-                                 (<= delta agent-recall-session-match-window))
+                    (let ((delta (abs (float-time (time-subtract session-time transcript-time)))))
+                      (when (<= delta agent-recall-session-match-window)
                         (push (cons session-id delta) result))))))
               ;; Sort by closest delta
               (sort result (lambda (a b) (< (cdr a) (cdr b)))))))
