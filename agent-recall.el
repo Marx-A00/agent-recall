@@ -1228,8 +1228,8 @@ derived from the project path (slashes become dashes, leading slash dropped).
 Returns nil if the directory doesn't exist."
   (when project-path
     (let* ((expanded (directory-file-name (expand-file-name project-path)))
-           ;; Claude's naming: replace / . and space with -, keep leading dash
-           (mangled (replace-regexp-in-string "[/. ]" "-" expanded))
+           ;; Claude's naming: replace / . _ and space with -, keep leading dash
+           (mangled (replace-regexp-in-string "[/. _]" "-" expanded))
            (dir (expand-file-name
                  (concat "projects/" mangled)
                  agent-recall-claude-config-dir)))
