@@ -82,7 +82,7 @@ are shown with a leading status indicator (`●' resumable, `○' not)."
     (append (cons agent-recall-rg-executable (cdr args))
             agent-recall-search-extra-args
             (cl-mapcan (lambda (pat) (list "--glob" pat))
-                       agent-recall-file-patterns))))
+                       (agent-recall--file-patterns)))))
 
 (defun agent-recall-consult--humanize-timestamp (basename)
   "Format BASENAME like `2026-04-30-15-32-21' as `30 Apr 26 03:32 PM'.

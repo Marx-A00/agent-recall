@@ -28,8 +28,9 @@
 ;; for agent-shell conversation transcripts.
 ;;
 ;; agent-shell (https://github.com/xenodium/agent-shell) automatically
-;; saves full conversation transcripts as Markdown files in
-;; `.agent-shell/transcripts/' directories within your projects.  Over
+;; saves full conversation transcripts as Markdown or org-mode files in
+;; `.agent-shell/transcripts/' directories within your projects, or in
+;; directories configured via `agent-recall-extra-transcript-dirs'.  Over
 ;; time these accumulate into a rich knowledge base of AI interactions,
 ;; but there's no built-in way to search across them or resume past
 ;; conversations.
@@ -150,6 +151,14 @@ transcripts in supported formats."
 
 (define-obsolete-variable-alias 'agent-recall-file-pattern
   'agent-recall-file-patterns "0.6.0")
+
+(defun agent-recall--file-patterns ()
+  "Return `agent-recall-file-patterns' normalized to a list.
+Legacy Customize values set via the obsolete `agent-recall-file-pattern'
+alias may still be a string; consumers expect a list of globs."
+  (if (stringp agent-recall-file-patterns)
+      (list agent-recall-file-patterns)
+    agent-recall-file-patterns))
 
 (defcustom agent-recall-extra-transcript-dirs nil
   "Additional directories containing transcript files to index directly.
@@ -442,6 +451,19 @@ For markdown files, falls back to `agent-recall--project-name'."
   "Return the transcript directory containing FILE."
   (file-name-directory file))
 
+(defun agent-recall--project-root-for-session (file)
+  "Return project root for session ID resolution from FILE.
+Uses conventional `.agent-shell/transcripts/' layout when applicable;
+otherwise falls back to the Working Directory header property."
+  (let* ((transcript-dir (agent-recall--transcript-dir-from-file file))
+         (layout-root (agent-recall--project-root transcript-dir)))
+    (if (and layout-root
+             (string-match-p
+              (concat "/" (regexp-quote agent-recall-transcript-dir-name) "/")
+              transcript-dir))
+        layout-root
+      (or (agent-recall--read-working-directory file) layout-root))))
+
 ;;;###autoload
 (defun agent-recall-invalidate-cache ()
   "Clear in-memory caches, forcing a reload from the index file.
@@ -536,7 +558,7 @@ created outside of agent-shell sessions tracked by the hook."
 (defun agent-recall--list-transcript-files (dir)
   "List all transcript files in DIR matching `agent-recall-file-patterns'."
   (let ((files '()))
-    (dolist (pattern agent-recall-file-patterns)
+    (dolist (pattern (agent-recall--file-patterns))
       (let ((regex (wildcard-to-regexp pattern)))
         (dolist (file (directory-files dir t regex t))
           (push file files))))
@@ -546,13 +568,13 @@ created outside of agent-shell sessions tracked by the hook."
   "Return `agent-recall-file-patterns' as grep --include arguments."
   (mapconcat (lambda (pat)
                (format "--include=%s" (shell-quote-argument pat)))
-             agent-recall-file-patterns " "))
+             (agent-recall--file-patterns) " "))
 
 (defun agent-recall--file-patterns-as-globs ()
   "Return `agent-recall-file-patterns' as ripgrep --glob arguments."
   (mapconcat (lambda (pat)
                (format "--glob %s" (shell-quote-argument pat)))
-             agent-recall-file-patterns " "))
+             (agent-recall--file-patterns) " "))
 
 ;;;; Search
 
@@ -637,7 +659,7 @@ DIRS are unused; counsel-rg searches the symlink directory instead."
                         "--no-heading" "--line-number" "--color" "never"
                         "--follow")
                   (cl-mapcan (lambda (pat) (list "--glob" pat))
-                             agent-recall-file-patterns)
+                             (agent-recall--file-patterns))
                   (list "%s"))))
     (counsel-rg query dir "" "Recall: ")
     (when (and agent-recall-auto-transcript-mode
@@ -1035,7 +1057,8 @@ and files in `agent-recall-extra-transcript-dirs'."
                 (string-prefix-p (expand-file-name agent-recall--symlink-dir)
                                  (expand-file-name file)))
            (cl-some (lambda (entry)
-                      (let ((dir (expand-file-name (plist-get entry :dir))))
+                      (let ((dir (file-name-as-directory
+                                  (expand-file-name (plist-get entry :dir)))))
                         (string-prefix-p dir (expand-file-name file))))
                     agent-recall-extra-transcript-dirs))))
 
@@ -1077,11 +1100,13 @@ Supports both markdown and org-mode transcript formats."
 (defun agent-recall--read-agent-name (file)
   "Extract the Agent from transcript FILE header."
   (when (file-exists-p file)
-    (with-temp-buffer
-      (insert-file-contents file nil 0 500)
-      (goto-char (point-min))
-      (when (re-search-forward "^\\*\\*Agent:\\*\\* \\(.+\\)" nil t)
-        (string-trim (match-string 1))))))
+    (if (agent-recall--org-file-p file)
+        (agent-recall--org-read-property file "Agent")
+      (with-temp-buffer
+        (insert-file-contents file nil 0 500)
+        (goto-char (point-min))
+        (when (re-search-forward "^\\*\\*Agent:\\*\\* \\(.+\\)" nil t)
+          (string-trim (match-string 1)))))))
 
 (defun agent-recall--normalize-agent-name (name)
   "Normalize agent NAME for matching transcript headers to configs."
@@ -1577,8 +1602,7 @@ Returns session ID string, or nil if unresolvable."
               ;; 1. Check embedded header
               (agent-recall--read-embedded-session-id file)
               ;; 2. Try hybrid matching (timestamp + message content)
-              (let* ((transcript-dir (agent-recall--transcript-dir-from-file file))
-                     (project-root (agent-recall--project-root transcript-dir))
+              (let* ((project-root (agent-recall--project-root-for-session file))
                      (claude-dir (agent-recall--claude-project-dir project-root))
                      (transcript-time (agent-recall--parse-transcript-timestamp file)))
                 (when claude-dir
@@ -1641,8 +1665,7 @@ Results are displayed in the `*agent-recall-backfill*' buffer."
                                    (substring existing 0 8))))
                   ;; Try to match using hybrid approach
                   (t
-                   (let* ((transcript-dir (agent-recall--transcript-dir-from-file file))
-                          (project-root (agent-recall--project-root transcript-dir))
+                   (let* ((project-root (agent-recall--project-root-for-session file))
                           (claude-dir (agent-recall--claude-project-dir project-root))
                           (transcript-time (agent-recall--parse-transcript-timestamp file))
                           (session-id nil))
