@@ -35,7 +35,7 @@
 
 (defvar agent-recall--index)
 (defvar agent-recall-auto-transcript-mode)
-(defvar agent-recall-file-pattern)
+(defvar agent-recall-file-patterns)
 (defvar agent-recall-rg-executable)
 (defvar agent-recall-search-extra-args)
 (declare-function agent-recall--index-dirs "agent-recall")
@@ -81,7 +81,8 @@ are shown with a leading status indicator (`●' resumable, `○' not)."
   (let ((args (consult--build-args consult-ripgrep-args)))
     (append (cons agent-recall-rg-executable (cdr args))
             agent-recall-search-extra-args
-            (list "--glob" agent-recall-file-pattern))))
+            (cl-mapcan (lambda (pat) (list "--glob" pat))
+                       agent-recall-file-patterns))))
 
 (defun agent-recall-consult--humanize-timestamp (basename)
   "Format BASENAME like `2026-04-30-15-32-21' as `30 Apr 26 03:32 PM'.

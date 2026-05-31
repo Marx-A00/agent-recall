@@ -2,7 +2,7 @@
 
 ;; Author: Marcos Andrade <https://github.com/Marx-A00>
 ;; URL: https://github.com/Marx-A00/agent-recall
-;; Version: 0.5.0
+;; Version: 0.6.0
 ;; Package-Requires: ((emacs "29.1") (agent-shell "0.1.0"))
 ;; Keywords: tools, convenience, ai
 
@@ -141,19 +141,15 @@ This is the conventional path used by agent-shell."
   :type 'string
   :group 'agent-recall)
 
-(defcustom agent-recall-file-pattern "*.md"
-  "Glob pattern matching transcript files within transcript directories.
-Also see `agent-recall-file-patterns' for multi-format support."
-  :type 'string
-  :group 'agent-recall)
-
 (defcustom agent-recall-file-patterns '("*.md" "*.org")
   "List of glob patterns matching transcript files.
-Used by `agent-recall-reindex' to find transcripts in all supported
-formats.  The single-pattern `agent-recall-file-pattern' is still
-honored by search backends for backward compatibility."
+Used by `agent-recall-reindex' and all search backends to find
+transcripts in supported formats."
   :type '(repeat string)
   :group 'agent-recall)
+
+(define-obsolete-variable-alias 'agent-recall-file-pattern
+  'agent-recall-file-patterns "0.6.0")
 
 (defcustom agent-recall-extra-transcript-dirs nil
   "Additional directories containing transcript files to index directly.
@@ -739,8 +735,14 @@ and org-mode transcript formats."
           (let ((text (string-trim (match-string 1))))
             (when (and (agent-recall--org-file-p file)
                        (string-prefix-p "#+begin_quote" text))
-              (setq text "(empty)"))
-            (truncate-string-to-width text 80))
+              (setq text (replace-regexp-in-string
+                           "\\`#\\+begin_quote\n?" "" text))
+              (setq text (replace-regexp-in-string
+                           "\n?#\\+end_quote\\'" "" text))
+              (setq text (string-trim text)))
+            (if (> (length text) 0)
+                (truncate-string-to-width text 80)
+              "(empty)"))
         "(empty)"))))
 
 (defun agent-recall--candidate-file (candidate)
@@ -1246,14 +1248,21 @@ For org files, inserts `#+PROPERTY: Session UUID' after existing properties."
       (if (agent-recall--org-file-p filepath)
           (unless (re-search-forward "^#\\+PROPERTY:\\s-+Session\\s-" nil t)
             (goto-char (point-min))
-            (let ((last-prop nil))
-              (while (re-search-forward "^#\\+PROPERTY:" nil t)
-                (setq last-prop (line-end-position)))
-              (when last-prop
-                (goto-char last-prop)
-                (end-of-line)
-                (insert (format "\n#+PROPERTY: Session %s" session-id))
-                (write-region (point-min) (point-max) filepath nil 'no-message))))
+            (let ((insert-pos nil))
+              (if (re-search-forward "^#\\+PROPERTY:" nil t)
+                  (progn
+                    (setq insert-pos (line-end-position))
+                    (while (re-search-forward "^#\\+PROPERTY:" nil t)
+                      (setq insert-pos (line-end-position))))
+                (goto-char (point-min))
+                (if (re-search-forward "^#\\+TITLE:" nil t)
+                    (setq insert-pos (line-end-position))
+                  (setq insert-pos (point-min))))
+              (goto-char insert-pos)
+              (unless (bolp)
+                (end-of-line))
+              (insert (format "\n#+PROPERTY: Session %s" session-id))
+              (write-region (point-min) (point-max) filepath nil 'no-message)))
         (unless (re-search-forward "^\\*\\*Session:\\*\\*" nil t)
           (goto-char (point-min))
           (when (re-search-forward "^---$" nil t)
