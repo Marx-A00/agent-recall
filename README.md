@@ -8,7 +8,7 @@ Search, browse, and resume [agent-shell](https://github.com/xenodium/agent-shell
 
 ## agent-recall
 
-[agent-shell](https://github.com/xenodium/agent-shell) automatically saves full conversation transcripts as Markdown files in `.agent-shell/transcripts/` within your projects. Over time these accumulate into a rich knowledge base of AI interactions, but there's no built-in way to search across them or resume past conversations.
+[agent-shell](https://github.com/xenodium/agent-shell) automatically saves full conversation transcripts as Markdown or Org-mode files in `.agent-shell/transcripts/` within your projects (or in a separate directory via `agent-shell-org-transcript`). Over time these accumulate into a rich knowledge base of AI interactions, but there's no built-in way to search across them or resume past conversations.
 
 agent-recall maintains a persistent index of all transcripts, provides fast full-text search, and can resume past agent-shell sessions from any transcript.
 
@@ -16,6 +16,7 @@ Features:
 
 - **Search** all transcripts with built-in grep (no external dependencies) or optional [ripgrep](https://github.com/BurntSushi/ripgrep) backends
 - **Live search** with real-time filtering via counsel-rg or consult-ripgrep
+- **Aggregated Consult search** with one result per matching transcript
 - **Browse** transcripts by project and date with live preview (consult or ivy/counsel)
 - **Resume** past agent-shell sessions directly from a transcript
 - **Track** session IDs automatically via hook
@@ -115,6 +116,17 @@ Tell agent-recall where your projects live. These directories are scanned recurs
 ;; (setq agent-recall-search-paths '("~"))
 ```
 
+#### Org-mode transcripts
+
+If you use [agent-shell-org-transcript](https://github.com/lllShamanlll/agent-shell-org-transcript) to save transcripts as Org files outside the conventional `.agent-shell/transcripts/` layout, add those directories directly:
+
+```elisp
+(setq agent-recall-extra-transcript-dirs
+      '((:dir "~/org/agent-shell/")))
+```
+
+Then run `M-x agent-recall-reindex` to pick them up.
+
 #### Search backend
 
 Choose how search results are displayed. The default `grep` backend works everywhere with no extra dependencies; the others require [ripgrep](https://github.com/BurntSushi/ripgrep) and provide live-filtering:
@@ -194,6 +206,8 @@ To automatically embed session IDs in new transcripts (enabling instant resume):
 `M-x agent-recall-search` prompts for a query and searches all indexed transcripts. The display depends on `agent-recall-search-function`.
 
 `M-x agent-recall-search-live` opens a live-filtering search. It auto-selects the best available backend (`counsel-rg` or `consult-ripgrep`); falls back to a one-shot search if neither is installed.
+
+`M-x agent-recall-consult-search` provides a richer Consult interface when `consult` and `ripgrep` are installed. It groups matches by transcript and shows candidates in `[project] [match-count] date first-match` format, then jumps to the first match in the selected transcript.
 
 ### Browsing transcripts
 
@@ -319,7 +333,8 @@ Evil users get additional bindings in normal state:
 | `agent-recall-search-paths` | Root directories to scan for transcripts |
 | `agent-recall-max-depth` | Maximum directory depth when scanning (default: 6) |
 | `agent-recall-transcript-dir-name` | Relative path identifying transcript dirs |
-| `agent-recall-file-pattern` | Glob pattern for transcript files (default: `*.md`) |
+| `agent-recall-file-patterns` | Glob patterns for transcript files (default: `*.md`, `*.org`) |
+| `agent-recall-extra-transcript-dirs` | Extra transcript directories indexed directly (e.g. org-mode output) |
 | `agent-recall-rg-executable` | Path to ripgrep executable for rg-based backends (default: `rg`) |
 | `agent-recall-search-extra-args` | Extra arguments passed to ripgrep (rg-based backends only) |
 | `agent-recall-search-context-lines` | Context lines around search matches (default: 2) |
@@ -339,6 +354,7 @@ Evil users get additional bindings in normal state:
 | `agent-recall-reindex` | Rebuild transcript index from filesystem |
 | `agent-recall-search` | Search all transcripts for a query |
 | `agent-recall-search-live` | Live-filtering search with auto backend selection |
+| `agent-recall-consult-search` | Aggregated Consult search grouped by transcript |
 | `agent-recall-browse` | Browse transcripts by project with previews |
 | `agent-recall-resume` | Resume a past session (pick from all resumable) |
 | `agent-recall-resume-current` | Resume session from current transcript |
@@ -362,8 +378,8 @@ The index is built by `agent-recall-reindex` (scans the filesystem) and grows au
 
 Session IDs are resolved in order:
 
-1. **Embedded header** — a `**Session:** UUID` line written by `agent-recall-track-sessions` or `agent-recall-backfill`
-2. **Retroactive matching** — hybrid approach: narrows candidates by comparing the transcript's `**Started:**` timestamp against Claude session data in `~/.claude/projects/` (within `agent-recall-session-match-window` seconds), then confirms by comparing the first user message in the transcript against the first message in the Claude JSONL file
+1. **Embedded header** — a `**Session:** UUID` line (markdown) or `#+PROPERTY: Session UUID` (org-mode) written by `agent-recall-track-sessions` or `agent-recall-backfill`
+2. **Retroactive matching** — hybrid approach: narrows candidates by comparing the transcript's `**Started:**` timestamp (markdown) or `#+DATE:` (org-mode) against Claude session data in `~/.claude/projects/` (within `agent-recall-session-match-window` seconds), then confirms by comparing the first user message in the transcript against the first message in the Claude JSONL file
 
 The main index is persisted to disk and loads automatically. Retroactive matching results are cached in memory to avoid re-running the expensive JSONL comparison on every access.
 
