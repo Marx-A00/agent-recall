@@ -1406,8 +1406,8 @@ derived from the project path (slashes become dashes, leading slash dropped).
 Returns nil if the directory doesn't exist."
   (when project-path
     (let* ((expanded (directory-file-name (expand-file-name project-path)))
-           ;; Claude's naming: replace / . and space with -, keep leading dash
-           (mangled (replace-regexp-in-string "[/. ]" "-" expanded))
+           ;; Claude's naming: replace / . _ and space with -, keep leading dash
+           (mangled (replace-regexp-in-string "[/. _]" "-" expanded))
            (dir (expand-file-name
                  (concat "projects/" mangled)
                  agent-recall-claude-config-dir)))
@@ -1560,9 +1560,8 @@ Returns session ID string, or nil."
                 (let* ((session-id (car entry))
                        (session-time (cdr entry)))
                   (when session-time
-                    (let ((delta (float-time (time-subtract session-time transcript-time))))
-                      (when (and (>= delta 0)
-                                 (<= delta agent-recall-session-match-window))
+                    (let ((delta (abs (float-time (time-subtract session-time transcript-time)))))
+                      (when (<= delta agent-recall-session-match-window)
                         (push (cons session-id delta) result))))))
               ;; Sort by closest delta
               (sort result (lambda (a b) (< (cdr a) (cdr b)))))))
