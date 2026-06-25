@@ -142,15 +142,15 @@ This is the conventional path used by agent-shell."
   :type 'string
   :group 'agent-recall)
 
+(define-obsolete-variable-alias 'agent-recall-file-pattern
+  'agent-recall-file-patterns "0.6.0")
+
 (defcustom agent-recall-file-patterns '("*.md" "*.org")
   "List of glob patterns matching transcript files.
 Used by `agent-recall-reindex' and all search backends to find
 transcripts in supported formats."
   :type '(repeat string)
   :group 'agent-recall)
-
-(define-obsolete-variable-alias 'agent-recall-file-pattern
-  'agent-recall-file-patterns "0.6.0")
 
 (defun agent-recall--file-patterns ()
   "Return `agent-recall-file-patterns' normalized to a list.
