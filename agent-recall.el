@@ -1362,7 +1362,8 @@ Add to your config:
 
 (defun agent-recall--read-embedded-session-id (file)
   "Read the session ID from transcript FILE header, if present.
-Supports both markdown (`**Session:** UUID') and org (`#+PROPERTY: Session UUID')."
+Supports markdown (`**Session:** UUID') and org
+\(`#+PROPERTY: Session UUID') formats."
   (when (file-exists-p file)
     (let ((uuid-re "[0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{12\\}"))
       (with-temp-buffer
