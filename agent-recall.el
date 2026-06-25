@@ -751,19 +751,28 @@ and org-mode transcript formats."
     (insert-file-contents file nil 0 3000)
     (goto-char (point-min))
     (let ((regex (if (agent-recall--org-file-p file)
-                     "^\\*\\* User.*\n+\\(.+\\)"
+                     "^\\*\\* User.*\n+"
                    "^## User.*\n+\\(?:> \\)?\\(.+\\)")))
       (if (re-search-forward regex nil t)
-          (let ((text (string-trim (match-string 1))))
-            (when (and (agent-recall--org-file-p file)
-                       (string-prefix-p "#+begin_quote" text))
-              (setq text (replace-regexp-in-string
-                           "\\`#\\+begin_quote\n?" "" text))
-              (setq text (replace-regexp-in-string
-                           "\n?#\\+end_quote\\'" "" text))
-              (setq text (string-trim text)))
+          (let ((text (if (agent-recall--org-file-p file)
+                          ;; For org: grab everything up to the next heading
+                          (let* ((start (point))
+                                 (end (if (re-search-forward "^\\*\\* " nil t)
+                                          (match-beginning 0)
+                                        (point-max)))
+                                 (raw (string-trim
+                                       (buffer-substring-no-properties start end))))
+                            (when (string-prefix-p "#+begin_quote" raw)
+                              (setq raw (replace-regexp-in-string
+                                         "\\`#\\+begin_quote\n?" "" raw))
+                              (setq raw (replace-regexp-in-string
+                                         "\n?#\\+end_quote\\'" "" raw)))
+                            (string-trim raw))
+                        ;; For markdown: already captured by regex group
+                        (string-trim (match-string 1)))))
             (if (> (length text) 0)
-                (truncate-string-to-width text 80)
+                (truncate-string-to-width
+                 (car (split-string text "\n" t)) 80)
               "(empty)"))
         "(empty)"))))
 
