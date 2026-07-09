@@ -1137,11 +1137,18 @@ Supports both markdown and org-mode transcript formats."
                 (map-elt config :buffer-name))))))
 
 (defun agent-recall--agent-config-for-transcript (file)
-  "Return the `agent-shell' config matching transcript FILE's Agent header."
+  "Return the `agent-shell' config matching transcript FILE's Agent header.
+Checks the user's preferred config first, then falls back to the
+default `agent-shell-agent-configs' list."
   (when-let ((agent-name (agent-recall--read-agent-name file)))
-    (seq-find (lambda (config)
-                (agent-recall--agent-config-matches-name-p config agent-name))
-              agent-shell-agent-configs)))
+    (let ((preferred (and (fboundp 'agent-shell--resolve-preferred-config)
+                          (agent-shell--resolve-preferred-config))))
+      (or (and preferred
+               (agent-recall--agent-config-matches-name-p preferred agent-name)
+               preferred)
+          (seq-find (lambda (config)
+                      (agent-recall--agent-config-matches-name-p config agent-name))
+                    agent-shell-agent-configs)))))
 
 (defun agent-recall--start-resume (session-id &optional transcript-file)
   "Resume SESSION-ID using agent-shell, skipping shell picker.
