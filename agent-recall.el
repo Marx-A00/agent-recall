@@ -1002,6 +1002,7 @@ plain markdown buffer you can render with your preferred method."
 (defvar agent-recall-transcript-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "r") #'agent-recall-resume-current)
+    (define-key map (kbd "R") #'agent-recall-force-resume-current)
     (define-key map (kbd "c") #'agent-recall-clean-view)
     (define-key map (kbd "b") #'agent-recall-browse-from-transcript)
     (define-key map (kbd "C-c C-n") #'agent-recall-next-user-message)
@@ -1018,11 +1019,17 @@ plain markdown buffer you can render with your preferred method."
 (defun agent-recall--header-line (&optional session-id)
   "Build the header line string for transcript mode.
 When SESSION-ID is non-nil, include a resume entry."
-  (let ((entries (list)))
+  (let ((entries (list))
+        (existing (and session-id
+                       (agent-recall--find-session-buffer session-id))))
     (when session-id
       (push (agent-recall--header-entry
-             "r" (format "Resume (%s)" (substring session-id 0 8)))
-            entries))
+             "r" (if existing
+                     (format "Resume (%s)" (buffer-name existing))
+                   (format "Resume (%s)" (substring session-id 0 (min 8 (length session-id))))))
+            entries)
+      (when existing
+        (push (agent-recall--header-entry "R" "Force Resume") entries)))
     (push (agent-recall--header-entry "c" "Clean") entries)
     (push (agent-recall--header-entry "b" "Browse") entries)
     (push (agent-recall--header-entry "C-j/C-k" "Navigate") entries)
@@ -1041,6 +1048,7 @@ When the transcript has a resumable session ID, press `r' to resume."
         ;; Evil-compatible keybinding
         (when (bound-and-true-p evil-mode)
           (evil-local-set-key 'normal (kbd "r") #'agent-recall-resume-current)
+          (evil-local-set-key 'normal (kbd "R") #'agent-recall-force-resume-current)
           (evil-local-set-key 'normal (kbd "c") #'agent-recall-clean-view)
           (evil-local-set-key 'normal (kbd "C-j") #'agent-recall-next-user-message)
           (evil-local-set-key 'normal (kbd "C-k") #'agent-recall-prev-user-message)
@@ -1051,7 +1059,7 @@ When the transcript has a resumable session ID, press `r' to resume."
           (evil-local-set-key 'normal (kbd "b") #'agent-recall-browse-from-transcript)
           (evil-local-set-key 'normal (kbd "q") #'quit-window))
         (setq-local header-line-format
-                    (agent-recall--header-line session-id)))
+                    '(:eval (agent-recall--header-line agent-recall--transcript-session-id))))
     (read-only-mode -1)
     (kill-local-variable 'agent-recall--transcript-session-id)
     (kill-local-variable 'header-line-format)))
@@ -1081,8 +1089,50 @@ and files in `agent-recall-extra-transcript-dirs'."
   agent-recall-transcript-mode agent-recall--maybe-enable-transcript-mode
   :group 'agent-recall)
 
+(defun agent-recall--find-session-buffer (session-id)
+  "Return a live agent-shell buffer already running SESSION-ID, or nil."
+  (seq-find
+   (lambda (buf)
+     (and (buffer-live-p buf)
+          (with-current-buffer buf
+            (and (derived-mode-p 'agent-shell-mode)
+                 (boundp 'agent-shell--state)
+                 agent-shell--state
+                 (or (equal session-id
+                            (map-nested-elt agent-shell--state
+                                            '(:session :id)))
+                     (equal session-id
+                            (map-elt agent-shell--state
+                                     :resume-session-id)))))))
+   (buffer-list)))
+
+(defun agent-recall--display-buffer (buffer)
+  "Display agent-shell BUFFER respecting viewport preferences."
+  (if (derived-mode-p 'agent-shell-mode 'agent-shell-viewport-view-mode
+                      'agent-shell-viewport-edit-mode)
+      (if (bound-and-true-p agent-shell-prefer-viewport-interaction)
+          (agent-shell-viewport--show-buffer :shell-buffer buffer)
+        (switch-to-buffer buffer))
+    (if (bound-and-true-p agent-shell-prefer-viewport-interaction)
+        (agent-shell-viewport--show-buffer :shell-buffer buffer)
+      (pop-to-buffer buffer))))
+
 (defun agent-recall-resume-current ()
-  "Resume the agent-shell session associated with the current transcript."
+  "Resume this transcript's session, or switch to its existing buffer."
+  (interactive)
+  (let ((session-id (buffer-local-value 'agent-recall--transcript-session-id
+                                        (current-buffer)))
+        (file (buffer-file-name)))
+    (unless session-id
+      (user-error "This transcript has no resumable session ID"))
+    (if-let ((existing (agent-recall--find-session-buffer session-id)))
+        (progn
+          (message "Switching to existing buffer: %s" (buffer-name existing))
+          (agent-recall--display-buffer existing))
+      (agent-recall--start-resume session-id file))))
+
+(defun agent-recall-force-resume-current ()
+  "Force-resume this transcript's session, ignoring existing buffers."
   (interactive)
   (let ((session-id (buffer-local-value 'agent-recall--transcript-session-id
                                         (current-buffer)))
@@ -1178,14 +1228,7 @@ When TRANSCRIPT-FILE is provided, sets working directory from the transcript."
     (when (and transcript-file agent-recall-resume-continue-transcript)
       (with-current-buffer shell-buffer
         (setq-local agent-shell--transcript-file transcript-file)))
-    (if (derived-mode-p 'agent-shell-mode 'agent-shell-viewport-view-mode
-                        'agent-shell-viewport-edit-mode)
-        (if (bound-and-true-p agent-shell-prefer-viewport-interaction)
-            (agent-shell-viewport--show-buffer :shell-buffer shell-buffer)
-          (switch-to-buffer shell-buffer))
-      (if (bound-and-true-p agent-shell-prefer-viewport-interaction)
-          (agent-shell-viewport--show-buffer :shell-buffer shell-buffer)
-        (pop-to-buffer shell-buffer)))))
+    (agent-recall--display-buffer shell-buffer)))
 
 ;;;###autoload
 (defun agent-recall-resume ()
@@ -1758,7 +1801,19 @@ Results are displayed in the `*agent-recall-backfill*' buffer."
     (agent-recall--open-transcript file t)))
 
 (defun agent-recall-embark-resume (candidate)
-  "Resume the agent-shell session for transcript CANDIDATE."
+  "Resume transcript CANDIDATE's session, or switch to existing buffer."
+  (when-let* ((file (agent-recall--candidate-file candidate)))
+    (let ((session-id (agent-recall--resolve-session-id file)))
+      (unless session-id
+        (user-error "This transcript has no resumable session ID"))
+      (if-let ((existing (agent-recall--find-session-buffer session-id)))
+          (progn
+            (message "Switching to existing buffer: %s" (buffer-name existing))
+            (agent-recall--display-buffer existing))
+        (agent-recall--start-resume session-id file)))))
+
+(defun agent-recall-embark-force-resume (candidate)
+  "Force-resume transcript CANDIDATE's session, ignoring existing buffers."
   (when-let* ((file (agent-recall--candidate-file candidate)))
     (let ((session-id (agent-recall--resolve-session-id file)))
       (if session-id
@@ -1769,6 +1824,7 @@ Results are displayed in the `*agent-recall-backfill*' buffer."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "o") #'agent-recall-embark-open-other-window)
     (define-key map (kbd "r") #'agent-recall-embark-resume)
+    (define-key map (kbd "R") #'agent-recall-embark-force-resume)
     map)
   "Embark actions for agent-recall transcript candidates.")
 
