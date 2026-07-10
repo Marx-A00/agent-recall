@@ -226,7 +226,8 @@ If you use [embark](https://github.com/oantolin/embark), agent-recall registers 
 | Key | Action |
 |-----|--------|
 | `o` | Open transcript in other window |
-| `r` | Resume session |
+| `r` | Resume session (switches to existing buffer if already running) |
+| `R` | Force resume session (always starts a new buffer) |
 
 ### Transcript mode
 
@@ -250,6 +251,8 @@ There are two ways to resume a past session:
 
 - Press `r` in transcript mode to resume that transcript's session
 - `M-x agent-recall-resume` to pick from all resumable transcripts
+
+If the session is already running in an agent-shell buffer, `r` will switch to that buffer instead of starting a new one. Press `R` to force a fresh resume regardless.
 
 Requires agent-shell to be loaded.
 
@@ -305,7 +308,8 @@ In `agent-recall-transcript-mode`:
 
 | Key | Command |
 |-----|---------|
-| `r` | Resume session (if session ID present) |
+| `r` | Resume session — switches to existing buffer if already running |
+| `R` | Force resume — always starts a new agent-shell buffer |
 | `c` | Open clean view (strip tool calls) |
 | `b` | Return to browse list |
 | `C-c C-n` | Jump to next user message |
@@ -357,7 +361,8 @@ Evil users get additional bindings in normal state:
 | `agent-recall-consult-search` | Aggregated Consult search grouped by transcript |
 | `agent-recall-browse` | Browse transcripts by project with previews |
 | `agent-recall-resume` | Resume a past session (pick from all resumable) |
-| `agent-recall-resume-current` | Resume session from current transcript |
+| `agent-recall-resume-current` | Resume session from current transcript (smart — switches to existing buffer) |
+| `agent-recall-force-resume-current` | Force resume, always starting a new agent-shell buffer |
 | `agent-recall-clean-view` | Strip tool calls, show clean user/agent messages |
 | `agent-recall-next-user-message` | Jump to next user message in transcript |
 | `agent-recall-prev-user-message` | Jump to previous user message in transcript |
