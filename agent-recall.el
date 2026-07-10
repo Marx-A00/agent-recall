@@ -1107,15 +1107,12 @@ and files in `agent-recall-extra-transcript-dirs'."
    (buffer-list)))
 
 (defun agent-recall--display-buffer (buffer)
-  "Display agent-shell BUFFER respecting viewport preferences."
-  (if (derived-mode-p 'agent-shell-mode 'agent-shell-viewport-view-mode
-                      'agent-shell-viewport-edit-mode)
-      (if (bound-and-true-p agent-shell-prefer-viewport-interaction)
-          (agent-shell-viewport--show-buffer :shell-buffer buffer)
-        (switch-to-buffer buffer))
-    (if (bound-and-true-p agent-shell-prefer-viewport-interaction)
-        (agent-shell-viewport--show-buffer :shell-buffer buffer)
-      (pop-to-buffer buffer))))
+  "Display agent-shell BUFFER respecting viewport preferences.
+Window placement for the non-viewport path is controlled by
+`display-buffer-alist'."
+  (if (bound-and-true-p agent-shell-prefer-viewport-interaction)
+      (agent-shell-viewport--show-buffer :shell-buffer buffer)
+    (pop-to-buffer buffer)))
 
 (defun agent-recall-resume-current ()
   "Resume this transcript's session, or switch to its existing buffer."
