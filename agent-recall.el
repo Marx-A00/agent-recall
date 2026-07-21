@@ -571,9 +571,13 @@ created outside of agent-shell sessions tracked by the hook."
              (agent-recall--file-patterns) " "))
 
 (defun agent-recall--file-patterns-as-globs ()
-  "Return `agent-recall-file-patterns' as ripgrep --glob arguments."
+  "Return `agent-recall-file-patterns' as ripgrep --glob arguments.
+The result is appended to `consult-ripgrep-args' (a whitespace-separated
+argument string parsed by `consult--build-args'), so patterns must not
+be shell-quoted — `shell-quote-argument' would leave a literal
+backslash in the argv (e.g. \"\\\\*.md\"), and ripgrep would match nothing."
   (mapconcat (lambda (pat)
-               (format "--glob %s" (shell-quote-argument pat)))
+               (format "--glob %s" pat))
              (agent-recall--file-patterns) " "))
 
 ;;;; Search
