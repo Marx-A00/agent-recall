@@ -1282,9 +1282,21 @@ When SESSION-ID is non-nil, include a resume entry."
     (push (agent-recall--header-entry "q" "Quit") entries)
     (concat "  " (mapconcat #'identity (nreverse entries) "  "))))
 
+(defun agent-recall--metadata-summary (metadata)
+  "Format METADATA alist as a single-line summary for the echo area."
+  (mapconcat (lambda (kv)
+               (concat (propertize (format "%s: "
+                                           (string-replace
+                                            "-" " " (symbol-name (car kv))))
+                                   'face 'shadow)
+                       (format "%s" (cdr kv))))
+             metadata "  |  "))
+
 (define-minor-mode agent-recall-transcript-mode
   "Minor mode for viewing agent-recall transcripts.
-When the transcript has a resumable session ID, press `r' to resume."
+When the transcript has a resumable session ID, press `r' to resume.
+When the session has saved metadata (model, effort, labels, etc.),
+a summary is shown in the echo area."
   :lighter " Recall"
   :keymap agent-recall-transcript-mode-map
   (if agent-recall-transcript-mode
@@ -1305,7 +1317,11 @@ When the transcript has a resumable session ID, press `r' to resume."
           (evil-local-set-key 'normal (kbd "b") #'agent-recall-browse-from-transcript)
           (evil-local-set-key 'normal (kbd "q") #'quit-window))
         (setq-local header-line-format
-                    '(:eval (agent-recall--header-line agent-recall--transcript-session-id))))
+                    '(:eval (agent-recall--header-line agent-recall--transcript-session-id)))
+        (when-let ((metadata (and session-id
+                                  (agent-recall-metadata session-id))))
+          (message "metadata detected — %s"
+                   (agent-recall--metadata-summary metadata))))
     (read-only-mode -1)
     (kill-local-variable 'agent-recall--transcript-session-id)
     (kill-local-variable 'header-line-format)))

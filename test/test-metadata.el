@@ -186,5 +186,16 @@
     (should (eq config (agent-recall--config-with-preferences
                         config '((label . "just a label")))))))
 
+;; ---------------------------------------------------------------------------
+;; Echo-area summary
+;; ---------------------------------------------------------------------------
+
+(ert-deftest test-metadata-summary-format ()
+  "Summary should render keys human-readably, values verbatim."
+  (let ((summary (agent-recall--metadata-summary
+                  '((model . "opus") (permission-mode . "plan") (label . "my label")))))
+    (should (equal "model: opus  |  permission mode: plan  |  label: my label"
+                   (substring-no-properties summary)))))
+
 (provide 'test-metadata)
 ;;; test-metadata.el ends here
