@@ -70,6 +70,16 @@ are shown with a leading status indicator (`●' resumable, `○' not)."
   :type 'boolean
   :group 'agent-recall-consult)
 
+(defcustom agent-recall-consult-sort-order nil
+  "How to sort search results.
+When nil, results appear in ripgrep's default order.  When
+`date-descending', results are sorted newest-first by the
+timestamp in the filename.  When `date-ascending', oldest-first."
+  :type '(choice (const :tag "Default (ripgrep order)" nil)
+                 (const :tag "Newest first" date-descending)
+                 (const :tag "Oldest first" date-ascending))
+  :group 'agent-recall-consult)
+
 (defun agent-recall-consult--ensure-consult ()
   "Ensure Consult is available."
   (unless (require 'consult nil t)
@@ -176,7 +186,16 @@ Each candidate is `[project] [N] DATE-TIME first-matched-line'."
                   (when highlight (funcall highlight text))
                   (puthash file (list 1 lnum text) by-file)
                   (push file order)))))))
-        (let* ((files (nreverse order))
+        (let* ((files (let ((lst (nreverse order)))
+                       (if agent-recall-consult-sort-order
+                           (let ((cmp (if (eq agent-recall-consult-sort-order
+                                              'date-descending)
+                                          #'string> #'string<)))
+                             (sort lst (lambda (a b)
+                                         (funcall cmp
+                                                  (file-name-nondirectory a)
+                                                  (file-name-nondirectory b)))))
+                         lst)))
                (proj-width 0)
                (count-width 0))
           (dolist (file files)

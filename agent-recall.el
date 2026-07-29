@@ -971,7 +971,8 @@ plain markdown buffer you can render with your preferred method."
           (when (fboundp 'markdown-mode)
             (markdown-mode))
           (set-buffer-modified-p nil)))
-      (pop-to-buffer buf))))
+      ;; Same-window by default; users can reroute via `display-buffer-alist'.
+      (pop-to-buffer buf '(display-buffer-same-window)))))
 
 (defun agent-recall-next-user-message ()
   "Jump to the next user message in the transcript."
