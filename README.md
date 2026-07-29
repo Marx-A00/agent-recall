@@ -270,6 +270,34 @@ If you would like to create new transcripts instead:
 (setq agent-recall-resume-continue-transcript nil)
 ```
 
+#### Restoring session preferences
+
+While a tracked session runs, agent-recall snapshots its preferences — model, thought level (effort), and permission mode — into a sidecar metadata store (`agent-recall-metadata-file`), keyed by session ID. Snapshots happen after every completed turn and when the shell buffer is killed, so the stored values always reflect the session's **last** state, even if you switched models mid-conversation. Transcript files themselves are never touched.
+
+On resume, those preferences are re-applied: model and permission mode during agent-shell's session bootstrap, effort right after initialization. Saved values are validated against what the live session actually offers — a model that no longer exists is skipped with a message, never an error.
+
+Control this with:
+
+```elisp
+(setq agent-recall-resume-restore-preferences t)   ; always restore (default)
+(setq agent-recall-resume-restore-preferences 'ask) ; prompt each time
+(setq agent-recall-resume-restore-preferences nil) ; never restore
+```
+
+The store is extensible: packages (or your config) can persist arbitrary per-session data and restore it on resume. Each capture function returns an alist to merge into the session's metadata (nil values remove keys); each restore function receives the saved metadata and the new shell buffer. For example, to preserve a custom buffer label across resumes:
+
+```elisp
+(add-hook 'agent-recall-capture-functions
+          (lambda () `((label . ,(my-app-get-label (current-buffer))))))
+
+(add-hook 'agent-recall-restore-functions
+          (lambda (metadata shell-buffer)
+            (when-let ((label (alist-get 'label metadata)))
+              (my-app-set-label shell-buffer label))))
+```
+
+Preferences only exist for sessions tracked by `agent-recall-track-sessions` from v0.7.0 onward; older sessions simply resume with agent-shell's defaults.
+
 #### Session load vs resume
 
 agent-shell supports two ACP methods for resuming sessions:

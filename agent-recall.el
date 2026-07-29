@@ -2,7 +2,7 @@
 
 ;; Author: Marcos Andrade <https://github.com/Marx-A00>
 ;; URL: https://github.com/Marx-A00/agent-recall
-;; Version: 0.6.1
+;; Version: 0.7.0
 ;; Package-Requires: ((emacs "29.1") (agent-shell "0.1.0"))
 ;; Keywords: tools, convenience, ai
 
@@ -250,6 +250,31 @@ When nil, agent-shell creates a new transcript file as usual."
   :type 'boolean
   :group 'agent-recall)
 
+(defcustom agent-recall-metadata-file
+  (expand-file-name "agent-recall/metadata.el"
+                    (if (boundp 'no-littering-var-directory)
+                        no-littering-var-directory
+                      user-emacs-directory))
+  "Path to the persistent session metadata file.
+Stores a per-session alist of arbitrary metadata (model, effort,
+permission mode, and anything added via
+`agent-recall-capture-functions'), keyed by session ID.  Kept
+separate from `agent-recall-index-file' so that
+`agent-recall-reindex' never wipes it."
+  :type 'file
+  :group 'agent-recall)
+
+(defcustom agent-recall-resume-restore-preferences t
+  "Whether resuming a session restores its saved preferences.
+Preferences (model, effort, permission mode, and any custom data
+captured via `agent-recall-capture-functions') are recorded per
+session in `agent-recall-metadata-file' and re-applied on resume.
+When set to `ask', prompts before restoring."
+  :type '(choice (const :tag "Always" t)
+                 (const :tag "Ask each time" ask)
+                 (const :tag "Never" nil))
+  :group 'agent-recall)
+
 (defcustom agent-recall-claude-config-dir
   (expand-file-name ".claude" (getenv "HOME"))
   "Path to the Claude CLI configuration directory.
@@ -402,6 +427,146 @@ exists, sets an empty hash-table and notifies the user."
                  (push file files)))
              agent-recall--index)
     (nreverse files)))
+
+;;;; Session Metadata (sidecar store)
+
+(defvar agent-recall-capture-functions
+  (list #'agent-recall--capture-preferences)
+  "Abnormal hook of functions returning session metadata to persist.
+Each function is called with no arguments in a live agent-shell
+buffer (on every `turn-complete' event and when the buffer is
+killed) and should return an alist of (KEY . VALUE) pairs to merge
+into the session's metadata.  A nil VALUE removes KEY.  Values must
+be printable/readable Lisp data.
+
+Add your own function to persist custom per-session data:
+
+  (add-hook \\='agent-recall-capture-functions
+            (lambda () \\=`((label . ,(my-get-label)))))")
+
+(defvar agent-recall-restore-functions nil
+  "Abnormal hook run after a session is resumed with saved metadata.
+Each function is called with two arguments: METADATA (the session's
+saved alist) and SHELL-BUFFER (the newly created agent-shell
+buffer).  Use this to restore custom data captured via
+`agent-recall-capture-functions'.  Model, effort, and permission
+mode are restored by agent-recall itself.")
+
+(defvar agent-recall--metadata nil
+  "In-memory hash-table of session metadata.
+Keys are session ID strings, values are alists of (KEY . VALUE).")
+
+(defvar agent-recall--metadata-loaded-p nil
+  "Non-nil if the metadata store has been loaded from disk this session.")
+
+(defun agent-recall--metadata-load ()
+  "Read the metadata file from disk into `agent-recall--metadata'.
+If the file is missing or corrupt, sets an empty hash-table."
+  (let ((file agent-recall-metadata-file))
+    (if (file-exists-p file)
+        (condition-case err
+            (with-temp-buffer
+              (insert-file-contents file)
+              (let ((data (read (current-buffer))))
+                (if (hash-table-p data)
+                    (setq agent-recall--metadata data)
+                  (setq agent-recall--metadata (make-hash-table :test 'equal))
+                  (message "agent-recall: metadata file corrupt, starting fresh"))))
+          (error
+           (setq agent-recall--metadata (make-hash-table :test 'equal))
+           (message "agent-recall: failed to load metadata: %s"
+                    (error-message-string err))))
+      (setq agent-recall--metadata (make-hash-table :test 'equal)))
+    (setq agent-recall--metadata-loaded-p t)))
+
+(defun agent-recall--metadata-save ()
+  "Write `agent-recall--metadata' to disk atomically.
+Writes to a temporary file then renames to `agent-recall-metadata-file'."
+  (when agent-recall--metadata
+    (let* ((file agent-recall-metadata-file)
+           (dir (file-name-directory file)))
+      (unless (file-directory-p dir)
+        (make-directory dir t))
+      (let ((temp (make-temp-file (expand-file-name ".metadata-" dir))))
+        (with-temp-file temp
+          (insert ";; agent-recall session metadata -*- no-byte-compile: t -*-\n")
+          (insert (format ";; Generated: %s\n\n" (format-time-string "%F %T")))
+          (let ((print-level nil)
+                (print-length nil))
+            (prin1 agent-recall--metadata (current-buffer)))
+          (insert "\n"))
+        (rename-file temp file t)))))
+
+(defun agent-recall--metadata-ensure ()
+  "Ensure the metadata store is loaded into memory."
+  (unless agent-recall--metadata-loaded-p
+    (agent-recall--metadata-load)))
+
+(defun agent-recall-metadata (session-id)
+  "Return the full metadata alist for SESSION-ID, or nil."
+  (when session-id
+    (agent-recall--metadata-ensure)
+    (gethash session-id agent-recall--metadata)))
+
+(defun agent-recall-metadata-get (session-id key)
+  "Return the metadata value for SESSION-ID under KEY, or nil."
+  (alist-get key (agent-recall-metadata session-id)))
+
+(defun agent-recall-metadata-merge (session-id alist)
+  "Merge ALIST into SESSION-ID's stored metadata.
+Each (KEY . VALUE) pair upserts KEY; a nil VALUE removes KEY.
+Skips the disk write entirely when nothing changed."
+  (when (and session-id alist)
+    (agent-recall--metadata-ensure)
+    (let* ((old (gethash session-id agent-recall--metadata))
+           (new (copy-alist old)))
+      (dolist (pair alist)
+        (if (cdr pair)
+            (setf (alist-get (car pair) new) (cdr pair))
+          (setf (alist-get (car pair) new nil t) nil)))
+      (unless (equal old new)
+        (if new
+            (puthash session-id new agent-recall--metadata)
+          (remhash session-id agent-recall--metadata))
+        (agent-recall--metadata-save))
+      new)))
+
+(defun agent-recall-metadata-put (session-id key value)
+  "Store VALUE under KEY in SESSION-ID's metadata.
+A nil VALUE removes KEY.  Saves to disk when changed."
+  (agent-recall-metadata-merge session-id (list (cons key value))))
+
+(defun agent-recall--capture-preferences ()
+  "Return the current buffer's agent-shell preferences as metadata.
+Captures the model, thought level (effort), and permission mode from
+the buffer-local `agent-shell--state'."
+  (when (bound-and-true-p agent-shell--state)
+    (let ((state agent-shell--state))
+      `((model . ,(and (fboundp 'agent-shell--current-model-id)
+                       (agent-shell--current-model-id state)))
+        (effort . ,(and (fboundp 'agent-shell--current-thought-level-id)
+                        (agent-shell--current-thought-level-id state)))
+        (permission-mode . ,(and (fboundp 'agent-shell--current-mode-id)
+                                 (agent-shell--current-mode-id state)))))))
+
+(defun agent-recall--session-metadata-capture ()
+  "Run `agent-recall-capture-functions' and persist the merged result.
+Intended to run in an agent-shell buffer.  Does nothing until the
+session ID is known."
+  (when-let ((session-id
+              (or (and (bound-and-true-p agent-shell--state)
+                       (map-nested-elt agent-shell--state '(:session :id)))
+                  agent-recall--pending-session-id)))
+    (let ((merged '()))
+      (dolist (fn agent-recall-capture-functions)
+        (condition-case err
+            (dolist (pair (funcall fn))
+              (setf (alist-get (car pair) merged) (cdr pair)))
+          (error
+           (message "agent-recall: capture function %s failed: %s"
+                    fn (error-message-string err)))))
+      (when merged
+        (agent-recall-metadata-merge session-id merged)))))
 
 (defun agent-recall--project-name (transcript-dir)
   "Extract the project name from TRANSCRIPT-DIR.
@@ -924,6 +1089,86 @@ using consult or ivy if available.  Falls back to plain `completing-read'."
       (when file
         (agent-recall--open-transcript file)))))
 
+(defun agent-recall--current-project-name ()
+  "Derive the current project name from `default-directory'.
+Uses `locate-dominating-file' to find a `.agent-shell/' directory,
+matching the path-based convention used by agent-shell.  If no
+`.agent-shell/' ancestor is found, falls back to the basename of
+`default-directory'."
+  (let* ((root (locate-dominating-file default-directory ".agent-shell"))
+         (dir (or root default-directory)))
+    (file-name-nondirectory (directory-file-name dir))))
+
+(defun agent-recall--list-transcripts-for-project (project)
+  "Return an alist of (DISPLAY-NAME . FILE-PATH) for transcripts matching PROJECT.
+Like `agent-recall--list-transcripts' but filtered to entries whose
+`:project' equals PROJECT (case-insensitive)."
+  (agent-recall--index-ensure)
+  (let ((transcripts '())
+        (project-down (downcase project)))
+    (maphash (lambda (file entry)
+               (when (and (file-exists-p file)
+                          (string= (downcase (or (plist-get entry :project) ""))
+                                   project-down))
+                 (let* ((ts (plist-get entry :timestamp))
+                        (display (format "[%s] %s" (plist-get entry :project) ts)))
+                   (push (list display file ts) transcripts))))
+             agent-recall--index)
+    (setq transcripts
+          (pcase agent-recall-browse-sort
+            ('date-desc     (sort transcripts (lambda (a b) (string> (nth 2 a) (nth 2 b)))))
+            ('date-asc      (sort transcripts (lambda (a b) (string< (nth 2 a) (nth 2 b)))))
+            ('modified-desc (sort transcripts (lambda (a b)
+                                                (time-less-p
+                                                 (file-attribute-modification-time (file-attributes (nth 1 b)))
+                                                 (file-attribute-modification-time (file-attributes (nth 1 a)))))))
+            ('modified-asc  (sort transcripts (lambda (a b)
+                                                (time-less-p
+                                                 (file-attribute-modification-time (file-attributes (nth 1 a)))
+                                                 (file-attribute-modification-time (file-attributes (nth 1 b)))))))
+            ('project       transcripts)))
+    (mapcar (lambda (entry) (cons (nth 0 entry) (nth 1 entry))) transcripts)))
+
+;;;###autoload
+(defun agent-recall-browse-project ()
+  "Browse transcripts for the current project only.
+Determines the project name from `default-directory' and shows only
+matching transcripts.  Uses the same preview and completion backend
+as `agent-recall-browse'."
+  (interactive)
+  (agent-recall--setup-embark)
+  (let* ((project (agent-recall--current-project-name))
+         (transcripts (agent-recall--list-transcripts-for-project project)))
+    (unless transcripts
+      (user-error "No transcripts found for project \"%s\"" project))
+    (let* ((candidates
+            (mapcar (lambda (entry)
+                      (propertize (car entry)
+                                  'agent-recall-file (cdr entry)))
+                    transcripts))
+           (annotate-fn (lambda (candidate)
+                          (when-let* ((file (agent-recall--candidate-file candidate))
+                                      (idx-entry (gethash file agent-recall--index))
+                                      (preview (plist-get idx-entry :preview)))
+                            (unless (string-empty-p preview)
+                              (concat "  " preview)))))
+           (selection
+            (cond
+             ((and agent-recall-browse-preview
+                   (bound-and-true-p ivy-mode)
+                   (require 'ivy nil t))
+              (agent-recall--browse-ivy candidates annotate-fn))
+             ((and agent-recall-browse-preview
+                   (require 'consult nil t))
+              (agent-recall--browse-consult candidates annotate-fn))
+             (t
+              (agent-recall--browse-default candidates annotate-fn))))
+           (file (and selection
+                      (or (agent-recall--candidate-file selection)
+                          (cdr (assoc selection transcripts))))))
+      (when file
+        (agent-recall--open-transcript file)))))
+
 (defun agent-recall-clean-view ()
   "Open a clean view of the current transcript.
 Creates a new buffer with only User and Agent messages, stripping
@@ -1198,11 +1443,96 @@ default `agent-shell-agent-configs' list."
                       (agent-recall--agent-config-matches-name-p config agent-name))
                     agent-shell-agent-configs)))))
 
+(defun agent-recall--restore-allowed-p (metadata)
+  "Return non-nil if saved METADATA should be restored on resume.
+Honors `agent-recall-resume-restore-preferences', prompting when
+set to `ask'."
+  (and metadata
+       (pcase agent-recall-resume-restore-preferences
+         ('nil nil)
+         ('ask (y-or-n-p
+                (format "Restore session preferences (%s)? "
+                        (mapconcat (lambda (kv)
+                                     (format "%s=%s" (car kv) (cdr kv)))
+                                   metadata ", "))))
+         (_ t))))
+
+(defun agent-recall--config-with-preferences (config metadata)
+  "Return CONFIG with model/mode overrides from METADATA prepended.
+The overrides are closures that agent-shell calls during session
+init; each validates the saved id against what the live session
+actually offers and returns nil (skipping the step) when the id is
+no longer available, so a stale id can never stall initialization."
+  (when-let ((model (alist-get 'model metadata)))
+    (setq config
+          (append
+           `((:default-model-id
+              . ,(lambda ()
+                   (if (and (fboundp 'agent-shell--get-available-models)
+                            (seq-find (lambda (m)
+                                        (equal (map-elt m :model-id) model))
+                                      (agent-shell--get-available-models
+                                       agent-shell--state)))
+                       model
+                     (message "agent-recall: saved model %s unavailable; skipping"
+                              model)
+                     nil))))
+           config)))
+  (when-let ((mode (alist-get 'permission-mode metadata)))
+    (setq config
+          (append
+           `((:default-session-mode-id
+              . ,(lambda ()
+                   (if (and (fboundp 'agent-shell--get-available-modes)
+                            (seq-find (lambda (m)
+                                        (equal (map-elt m :id) mode))
+                                      (agent-shell--get-available-modes
+                                       agent-shell--state)))
+                       mode
+                     (message "agent-recall: saved mode %s unavailable; skipping"
+                              mode)
+                     nil))))
+           config)))
+  config)
+
+(defun agent-recall--restore-thought-level (shell-buffer effort)
+  "Restore EFFORT (thought level) in SHELL-BUFFER once init completes.
+Subscribes one-shot to `init-finished' (which re-fires on every
+command, hence the immediate unsubscribe) and silently skips when
+the agent does not advertise a thought level option or EFFORT is
+not among its values."
+  (let ((token nil))
+    (setq token
+          (agent-shell-subscribe-to
+           :shell-buffer shell-buffer
+           :event 'init-finished
+           :on-event
+           (lambda (_event)
+             (when token
+               (agent-shell-unsubscribe :subscription token)
+               (setq token nil)
+               (when (buffer-live-p shell-buffer)
+                 (with-current-buffer shell-buffer
+                   (when (and (fboundp 'agent-shell--get-available-thought-levels)
+                              (seq-find (lambda (v)
+                                          (equal (map-elt v :value) effort))
+                                        (agent-shell--get-available-thought-levels
+                                         agent-shell--state)))
+                     (agent-shell--config-option-set-thought-level-id
+                      :thought-level-id effort
+                      :on-failure
+                      (lambda (&rest _)
+                        (message "agent-recall: could not restore effort %s"
+                                 effort))))))))))))
+
 (defun agent-recall--start-resume (session-id &optional transcript-file)
   "Resume SESSION-ID using agent-shell, skipping shell picker.
 Uses the transcript Agent header to select the original agent when
 available, then starts a new shell buffer with the session loaded.
-When TRANSCRIPT-FILE is provided, sets working directory from the transcript."
+When TRANSCRIPT-FILE is provided, sets working directory from the
+transcript.  Saved session preferences (model, effort, permission
+mode, and custom `agent-recall-restore-functions' data) are restored
+per `agent-recall-resume-restore-preferences'."
   (let* ((transcript-agent (and transcript-file
                                 (agent-recall--read-agent-name transcript-file)))
          (default-directory (or (and transcript-file
@@ -1218,6 +1548,11 @@ When TRANSCRIPT-FILE is provided, sets working directory from the transcript."
                                           transcript-agent)
                                 "Resume with agent: "))
                      (error "No agent config found")))
+         (metadata (agent-recall-metadata session-id))
+         (restore (agent-recall--restore-allowed-p metadata))
+         (config (if restore
+                     (agent-recall--config-with-preferences config metadata)
+                   config))
          (shell-buffer (agent-shell--start :config config
                                            :session-id session-id
                                            :session-strategy 'new
@@ -1226,6 +1561,10 @@ When TRANSCRIPT-FILE is provided, sets working directory from the transcript."
     (when (and transcript-file agent-recall-resume-continue-transcript)
       (with-current-buffer shell-buffer
         (setq-local agent-shell--transcript-file transcript-file)))
+    (when restore
+      (when-let ((effort (alist-get 'effort metadata)))
+        (agent-recall--restore-thought-level shell-buffer effort))
+      (run-hook-with-args 'agent-recall-restore-functions metadata shell-buffer))
     (agent-recall--display-buffer shell-buffer)))
 
 ;;;###autoload
@@ -1363,6 +1702,18 @@ Add to your config:
   (add-hook \\='agent-shell-mode-hook #\\='agent-recall-track-sessions)"
 
   (let ((shell-buffer (current-buffer)))
+    ;; Persistent metadata capture: snapshot preferences (and any custom
+    ;; `agent-recall-capture-functions' data) after every turn and on
+    ;; buffer kill, so the stored values always reflect the last state.
+    (agent-shell-subscribe-to
+     :shell-buffer shell-buffer
+     :event 'turn-complete
+     :on-event
+     (lambda (_event)
+       (when (buffer-live-p shell-buffer)
+         (with-current-buffer shell-buffer
+           (agent-recall--session-metadata-capture)))))
+    (add-hook 'kill-buffer-hook #'agent-recall--session-metadata-capture nil t)
     ;; Subscribe to init-session to capture the session ID
     (agent-shell-subscribe-to
      :shell-buffer shell-buffer
