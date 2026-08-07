@@ -1199,7 +1199,9 @@ default `agent-shell-agent-configs' list."
                preferred)
           (seq-find (lambda (config)
                       (agent-recall--agent-config-matches-name-p config agent-name))
-                    agent-shell-agent-configs)))))
+                    (if (fboundp 'agent-shell--resolved-agent-configs)
+                        (agent-shell--resolved-agent-configs)
+                      agent-shell-agent-configs))))))
 
 (defun agent-recall--start-resume (session-id &optional transcript-file)
   "Resume SESSION-ID using agent-shell, skipping shell picker.
