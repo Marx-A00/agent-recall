@@ -5,6 +5,7 @@
 .DS_Store
 
 # Local tooling
+/docs/
 .claude/
 .env
 .env.example
