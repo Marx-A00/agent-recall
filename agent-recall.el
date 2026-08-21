@@ -1461,7 +1461,9 @@ default `agent-shell-agent-configs' list."
                preferred)
           (seq-find (lambda (config)
                       (agent-recall--agent-config-matches-name-p config agent-name))
-                    agent-shell-agent-configs)))))
+                    (if (fboundp 'agent-shell--resolved-agent-configs)
+                        (agent-shell--resolved-agent-configs)
+                      agent-shell-agent-configs))))))
 
 (defun agent-recall--restore-allowed-p (metadata)
   "Return non-nil if saved METADATA should be restored on resume.
