@@ -411,7 +411,7 @@ The index is built by `agent-recall-reindex` (scans the filesystem) and grows au
 
 Session IDs are resolved in order:
 
-1. **Embedded header** — a `**Session:** UUID` line (markdown) or `#+PROPERTY: Session UUID` (org-mode) written by `agent-recall-track-sessions` or `agent-recall-backfill`
+1. **Embedded header** — a `**Session ID:** UUID` line written natively by agent-shell, or `**Session:** UUID` / `#+PROPERTY: Session UUID` written by `agent-recall-track-sessions` or `agent-recall-backfill`
 2. **Retroactive matching** — hybrid approach: narrows candidates by comparing the transcript's `**Started:**` timestamp (markdown) or `#+DATE:` (org-mode) against Claude session data in `~/.claude/projects/` (within `agent-recall-session-match-window` seconds), then confirms by comparing the first user message in the transcript against the first message in the Claude JSONL file
 
 The main index is persisted to disk and loads automatically. Retroactive matching results are cached in memory to avoid re-running the expensive JSONL comparison on every access.

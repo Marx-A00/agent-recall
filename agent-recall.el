@@ -1681,13 +1681,17 @@ Only shows transcripts that have resolvable session IDs."
 (defun agent-recall--write-session-id-to-file (filepath session-id)
   "Insert SESSION-ID into the header of transcript at FILEPATH.
 For markdown files, inserts `**Session:** UUID' before the `---' separator.
-For org files, inserts `#+PROPERTY: Session UUID' after existing properties."
+For org files, inserts `#+PROPERTY: Session UUID' after existing properties.
+
+Skips writing when a session ID is already present, including agent-shell's
+native `**Session ID:**' / `#+PROPERTY: Session_ID' headers."
   (when (and filepath (file-exists-p filepath) session-id)
     (with-temp-buffer
       (insert-file-contents filepath)
       (goto-char (point-min))
       (if (agent-recall--org-file-p filepath)
-          (unless (re-search-forward "^#\\+PROPERTY:\\s-+Session\\s-" nil t)
+          (unless (re-search-forward
+                   "^#\\+PROPERTY:\\s-+Session\\(?:_ID\\)?\\s-" nil t)
             (goto-char (point-min))
             (let ((insert-pos nil))
               (if (re-search-forward "^#\\+PROPERTY:" nil t)
@@ -1704,7 +1708,9 @@ For org files, inserts `#+PROPERTY: Session UUID' after existing properties."
                 (end-of-line))
               (insert (format "\n#+PROPERTY: Session %s" session-id))
               (write-region (point-min) (point-max) filepath nil 'no-message)))
-        (unless (re-search-forward "^\\*\\*Session:\\*\\*" nil t)
+        ;; Match both agent-recall's `**Session:**' and agent-shell's
+        ;; `**Session ID:**' so we do not duplicate headers.
+        (unless (re-search-forward "^\\*\\*Session\\(?: ID\\)?:\\*\\*" nil t)
           (goto-char (point-min))
           (when (re-search-forward "^---$" nil t)
             (goto-char (match-beginning 0))
@@ -1781,8 +1787,9 @@ Add to your config:
 
 (defun agent-recall--read-embedded-session-id (file)
   "Read the session ID from transcript FILE header, if present.
-Supports markdown (`**Session:** UUID') and org
-\(`#+PROPERTY: Session UUID') formats."
+Supports markdown `**Session:** UUID' (agent-recall) and
+`**Session ID:** UUID' (agent-shell native header), plus org
+`#+PROPERTY: Session UUID' / `#+PROPERTY: Session_ID UUID'."
   (when (file-exists-p file)
     (let ((uuid-re "[0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{12\\}"))
       (with-temp-buffer
@@ -1790,8 +1797,10 @@ Supports markdown (`**Session:** UUID') and org
         (goto-char (point-min))
         (when (re-search-forward
                (if (agent-recall--org-file-p file)
-                   (format "^#\\+PROPERTY:\\s-+Session\\s-+\\(%s\\)" uuid-re)
-                 (format "^\\*\\*Session:\\*\\*\\s-+\\(%s\\)" uuid-re))
+                   (format "^#\\+PROPERTY:\\s-+Session\\(?:_ID\\)?\\s-+\\(%s\\)"
+                           uuid-re)
+                 (format "^\\*\\*Session\\(?: ID\\)?:\\*\\*\\s-+\\(%s\\)"
+                         uuid-re))
                nil t)
           (match-string 1))))))
 
@@ -2011,7 +2020,7 @@ Returns session ID string, or nil."
   "Resolve the session ID for transcript FILE.
 Checks in order:
   1. In-memory cache
-  2. Embedded `**Session:**' header (from `agent-recall-track-sessions')
+  2. Embedded header (`**Session:**' or agent-shell `**Session ID:**')
   3. Retroactive timestamp matching against Claude session data
 Returns session ID string, or nil if unresolvable."
   ;; Check cache

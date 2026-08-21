@@ -173,6 +173,38 @@
   (with-test-file f "#+TITLE: Test\n#+PROPERTY: Working_Directory /tmp\n\n** User\nHi\n"
     (should-not (agent-recall--read-embedded-session-id f))))
 
+(ert-deftest test-read-session-id-md-legacy ()
+  "agent-recall's own `**Session:**' header remains readable."
+  (with-test-md-file f (format "# Transcript\n\n**Session:** %s\n\n---\n\n## User\nHi\n" test-uuid)
+    (should (equal (agent-recall--read-embedded-session-id f) test-uuid))))
+
+(ert-deftest test-read-session-id-md-agent-shell-native ()
+  "agent-shell writes `**Session ID:**'; resume must see it."
+  (with-test-md-file f (format "# Agent Shell Transcript
+
+**Agent:** Cursor
+**Started:** 2026-07-20 12:36:49
+**Working Directory:** /tmp
+**Session ID:** %s
+**Model:** grok
+
+---
+
+## User
+Hi
+" test-uuid)
+    (should (equal (agent-recall--read-embedded-session-id f) test-uuid))))
+
+(ert-deftest test-write-session-id-md-skips-when-agent-shell-header-present ()
+  "Do not add a duplicate `**Session:**' when `**Session ID:**' exists."
+  (with-test-md-file f (format "# Transcript\n**Session ID:** %s\n\n---\n\n## User\nHi\n" test-uuid)
+    (agent-recall--write-session-id-to-file f test-uuid)
+    (let ((content (with-temp-buffer
+                     (insert-file-contents f)
+                     (buffer-string))))
+      (should-not (string-match-p "\\*\\*Session:\\*\\*" content))
+      (should (string-match-p "\\*\\*Session ID:\\*\\*" content)))))
+
 ;; ---------------------------------------------------------------------------
 ;; agent-recall--read-working-directory (org)
 ;; ---------------------------------------------------------------------------
