@@ -2633,30 +2633,51 @@ PROGRESS-BUFFER shows status.  TOTAL and DONE track progress."
            (agent-recall--summarize-next
             rest work-buffer progress-buffer total (1+ done))))))))
 
+(defun agent-recall--indexed-projects ()
+  "Return the sorted list of distinct project names in the index."
+  (let ((projects '()))
+    (maphash (lambda (_file entry)
+               (when-let ((project (plist-get entry :project)))
+                 (unless (member project projects)
+                   (push project projects))))
+             agent-recall--index)
+    (sort projects #'string<)))
+
 ;;;###autoload
-(defun agent-recall-summarize ()
-  "Summarize all un-summarized transcripts via ACP.
+(defun agent-recall-summarize (&optional projects)
+  "Summarize un-summarized transcripts via ACP.
 Creates a dedicated ACP session (independent of any agent-shell
 buffer) to send each transcript through the LLM.  Summaries are
 saved as TIMESTAMP.summary.md files next to the original transcripts.
 
+Interactively, prompts for one or more PROJECTS to limit the batch
+\(comma-separated; empty input means all projects).  From Lisp,
+PROJECTS is a list of project-name strings, or nil for all.
+
 This is a user-initiated batch operation.  Transcripts that already
 have a summary file are skipped.  Progress is shown in the
 *agent-recall-summarize* buffer."
-  (interactive)
+  (interactive
+   (progn
+     (agent-recall--index-ensure)
+     (list (completing-read-multiple
+            "Summarize projects (empty = all): "
+            (agent-recall--indexed-projects)))))
   (agent-recall--index-ensure)
   (let ((config (agent-shell-select-config
                  :prompt "Select agent for summarization: ")))
     (unless config
       (user-error "No agent config selected"))
     (let ((files '()))
-      (maphash (lambda (file _entry)
+      (maphash (lambda (file entry)
                  (when (and (file-exists-p file)
-                            (agent-recall--needs-summary-p file))
+                            (agent-recall--needs-summary-p file)
+                            (or (null projects)
+                                (member (plist-get entry :project) projects)))
                    (push file files)))
                agent-recall--index)
       (unless files
-        (user-error "All transcripts already have summaries"))
+        (user-error "All matching transcripts already have summaries"))
       (setq files (sort files #'string<))
       (let* ((progress-buffer (get-buffer-create "*agent-recall-summarize*"))
              (work-buffer (generate-new-buffer " *agent-recall-summarize-work*"))
