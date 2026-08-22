@@ -119,6 +119,11 @@
   "Face for labels in the transcript header line."
   :group 'agent-recall)
 
+(defface agent-recall-label
+  '((t :inherit font-lock-keyword-face))
+  "Face for user-assigned session labels in pickers and candidates."
+  :group 'agent-recall)
+
 (defcustom agent-recall-search-paths nil
   "Root directories to scan when rebuilding the transcript index.
 Used only by `agent-recall-reindex'.  Each directory is recursively
@@ -544,6 +549,23 @@ Skips the disk write entirely when nothing changed."
   "Store VALUE under KEY in SESSION-ID's metadata.
 A nil VALUE removes KEY.  Saves to disk when changed."
   (agent-recall-metadata-merge session-id (list (cons key value))))
+
+(defun agent-recall-session-label (session-id)
+  "Return the user-assigned display label for SESSION-ID, or nil.
+Labels live under the `label' metadata key, typically written by an
+`agent-recall-capture-functions' hook.  Returns nil when SESSION-ID
+is nil, has no stored metadata, or the label is an empty string."
+  (when session-id
+    (let ((label (agent-recall-metadata-get session-id 'label)))
+      (and (stringp label) (not (string-empty-p label)) label))))
+
+(defun agent-recall--label-suffix (session-id)
+  "Return a propertized \"  LABEL\" display suffix for SESSION-ID.
+Returns an empty string when the session has no label, so callers
+can concat it unconditionally onto candidate strings."
+  (if-let ((label (agent-recall-session-label session-id)))
+      (concat "  " (propertize label 'face 'agent-recall-label))
+    ""))
 
 (defun agent-recall--capture-preferences ()
   "Return the current buffer's agent-shell preferences as metadata.
@@ -974,7 +996,9 @@ Each entry also carries its timestamp for sorting."
                (when (file-exists-p file)
                  (let* ((project (plist-get entry :project))
                         (ts (plist-get entry :timestamp))
-                        (display (format "[%s] %s" project ts)))
+                        (display (concat (format "[%s] %s" project ts)
+                                         (agent-recall--label-suffix
+                                          (plist-get entry :session-id)))))
                    (push (list display file ts project) transcripts))))
              agent-recall--index)
     (setq transcripts
@@ -1195,7 +1219,9 @@ Like `agent-recall--list-transcripts' but filtered to entries whose
                           (string= (downcase (or (plist-get entry :project) ""))
                                    project-down))
                  (let* ((ts (plist-get entry :timestamp))
-                        (display (format "[%s] %s" (plist-get entry :project) ts)))
+                        (display (concat (format "[%s] %s" (plist-get entry :project) ts)
+                                         (agent-recall--label-suffix
+                                          (plist-get entry :session-id)))))
                    (push (list display file ts) transcripts))))
              agent-recall--index)
     (setq transcripts
@@ -1684,7 +1710,8 @@ Only shows transcripts that have resolvable session IDs."
                      (let* ((project (plist-get entry :project))
                             (ts (plist-get entry :timestamp))
                             (preview (or (plist-get entry :preview) ""))
-                            (display (format "[%s] %s" project ts)))
+                            (display (concat (format "[%s] %s" project ts)
+                                             (agent-recall--label-suffix session-id))))
                        (push (list display file session-id preview) resumable))))))
              agent-recall--index)
     (unless resumable

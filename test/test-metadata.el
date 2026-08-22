@@ -197,5 +197,30 @@
     (should (equal "model: opus  |  permission mode: plan  |  label: my label"
                    (substring-no-properties summary)))))
 
+;; ---------------------------------------------------------------------------
+;; Label accessor + display suffix
+;; ---------------------------------------------------------------------------
+
+(ert-deftest test-metadata-session-label ()
+  "Label accessor returns stored labels, nil for missing/empty/nil id."
+  (with-temp-metadata-store
+    (should-not (agent-recall-session-label nil))
+    (should-not (agent-recall-session-label test-md-session-id))
+    (agent-recall-metadata-put test-md-session-id 'label "refactor tangle")
+    (should (equal "refactor tangle"
+                   (agent-recall-session-label test-md-session-id)))
+    ;; An empty label counts as no label.
+    (agent-recall-metadata-put test-md-session-id 'label "")
+    (should-not (agent-recall-session-label test-md-session-id))))
+
+(ert-deftest test-metadata-label-suffix ()
+  "Display suffix is a propertized \"  LABEL\", empty string otherwise."
+  (with-temp-metadata-store
+    (should (equal "" (agent-recall--label-suffix test-md-session-id)))
+    (agent-recall-metadata-put test-md-session-id 'label "wip")
+    (let ((suffix (agent-recall--label-suffix test-md-session-id)))
+      (should (equal "  wip" (substring-no-properties suffix)))
+      (should (eq 'agent-recall-label (get-text-property 2 'face suffix))))))
+
 (provide 'test-metadata)
 ;;; test-metadata.el ends here

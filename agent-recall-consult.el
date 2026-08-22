@@ -114,7 +114,9 @@ is its trimmed text.  PROJ-WIDTH and COUNT-WIDTH are the longest
 project name and count digit-string in the current result set, used to
 pad those columns so the date column aligns.  File path and line are
 stored as text properties.  When `agent-recall-consult-resumable-only'
-is nil, a leading indicator shows whether the session is resumable."
+is nil, a leading indicator shows whether the session is resumable.
+Sessions with a user-assigned label (see `agent-recall-session-label')
+show it after the date column."
   (let* ((entry (gethash file agent-recall--index))
          (project (or (plist-get entry :project)
                       (agent-recall--project-name (file-name-directory file))))
@@ -141,6 +143,7 @@ is nil, a leading indicator shows whether the session is resumable."
                 count-pad
                 " "
                 (propertize timestamp 'face 'shadow)
+                (agent-recall--label-suffix (plist-get entry :session-id))
                 " "
                 content)))
     (add-text-properties 0 (length cand)
