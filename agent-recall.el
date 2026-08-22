@@ -567,6 +567,22 @@ can concat it unconditionally onto candidate strings."
       (concat "  " (propertize label 'face 'agent-recall-label))
     ""))
 
+(defun agent-recall--display-timestamp (ts)
+  "Format index timestamp TS (\"2026-08-21-19-33-56\") as \"Aug 21\".
+Timestamps from a year other than the current one include it
+\(\"Aug 21 2025\").  Returns TS unchanged when it doesn't parse."
+  (let ((parts (split-string (or ts "") "[-T]")))
+    (if (< (length parts) 3)
+        ts
+      (let ((year (string-to-number (nth 0 parts)))
+            (month (string-to-number (nth 1 parts)))
+            (day (string-to-number (nth 2 parts))))
+        (if (and (<= 1 month 12) (<= 1 day 31) (> year 0))
+            (concat (format-time-string "%b %e" (encode-time 0 0 0 day month year))
+                    (unless (= year (string-to-number (format-time-string "%Y")))
+                      (format " %d" year)))
+          ts)))))
+
 (defun agent-recall--capture-preferences ()
   "Return the current buffer's agent-shell preferences as metadata.
 Captures the model, thought level (effort), and permission mode from
@@ -996,7 +1012,9 @@ Each entry also carries its timestamp for sorting."
                (when (file-exists-p file)
                  (let* ((project (plist-get entry :project))
                         (ts (plist-get entry :timestamp))
-                        (display (concat (format "[%s] %s" project ts)
+                        (display (concat (format "[%s] " project)
+                                         (propertize (agent-recall--display-timestamp ts)
+                                                     'face 'shadow)
                                          (agent-recall--label-suffix
                                           (plist-get entry :session-id)))))
                    (push (list display file ts project) transcripts))))
@@ -1219,7 +1237,9 @@ Like `agent-recall--list-transcripts' but filtered to entries whose
                           (string= (downcase (or (plist-get entry :project) ""))
                                    project-down))
                  (let* ((ts (plist-get entry :timestamp))
-                        (display (concat (format "[%s] %s" (plist-get entry :project) ts)
+                        (display (concat (format "[%s] " (plist-get entry :project))
+                                         (propertize (agent-recall--display-timestamp ts)
+                                                     'face 'shadow)
                                          (agent-recall--label-suffix
                                           (plist-get entry :session-id)))))
                    (push (list display file ts) transcripts))))
@@ -1710,9 +1730,15 @@ Only shows transcripts that have resolvable session IDs."
                      (let* ((project (plist-get entry :project))
                             (ts (plist-get entry :timestamp))
                             (preview (or (plist-get entry :preview) ""))
-                            (display (concat (format "[%s] %s" project ts)
+                            (display (concat (format "[%s] " project)
+                                             (propertize (agent-recall--display-timestamp ts)
+                                                         'face 'shadow)
                                              (agent-recall--label-suffix session-id))))
-                       (push (list display file session-id preview) resumable))))))
+                       ;; Short dates make display strings collide; the
+                       ;; property, not the string, identifies the file.
+                       (push (list (propertize display 'agent-recall-file file)
+                                   file session-id preview)
+                             resumable))))))
              agent-recall--index)
     (unless resumable
       (user-error "No resumable transcripts found.  Try `agent-recall-backfill' first"))
@@ -1730,7 +1756,11 @@ Only shows transcripts that have resolvable session IDs."
                            (complete-with-action
                             action (mapcar #'car resumable) string pred)))
                        nil t))
-           (entry (assoc selection resumable))
+           (entry (or (when-let ((file (agent-recall--candidate-file selection)))
+                        (seq-find (lambda (e) (equal (nth 1 e) file)) resumable))
+                      ;; Fallback for completion UIs that strip text
+                      ;; properties from the returned string.
+                      (assoc selection resumable)))
            (file (nth 1 entry))
            (session-id (nth 2 entry)))
       (when session-id
