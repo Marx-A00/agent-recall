@@ -912,9 +912,15 @@ Returns an empty string when no matches are found."
   (agent-recall--index-ensure)
   (let* ((dirs (agent-recall--index-dirs))
          (dir-args (mapconcat #'shell-quote-argument dirs " "))
-         (cmd (format "%s --follow --glob '%s' --sort=modified -C %d -m %d -i -- %s %s"
+         ;; Shell-quoted variant of `agent-recall--file-patterns-as-globs'
+         ;; (that one feeds consult argv and must NOT be quoted).
+         (glob-args (concat (mapconcat (lambda (pat)
+                                         (format "--glob %s" (shell-quote-argument pat)))
+                                       (agent-recall--file-patterns) " ")
+                            " --glob " (shell-quote-argument "!*.summary.*")))
+         (cmd (format "%s --follow %s --sort=modified -C %d -m %d -i -- %s %s"
                       agent-recall-rg-executable
-                      agent-recall-file-pattern
+                      glob-args
                       agent-recall-search-context-lines
                       (or max-results 20)
                       (shell-quote-argument query)
